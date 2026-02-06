@@ -4,9 +4,10 @@
 
 역할:
 - 환경설정 값의 로드/검증/저장(settings.ini)
-- 디스플레이(창모드 고정 1280x720 + 전체화면 3종) 적용
+- 디스플레이(창모드 1280x720 + 전체화면 3종) 적용
 - 볼륨(BGM/SFX), 마우스 감도 값 관리
 - 닉네임(한글/영문/숫자만, 2~15글자) 저장/로드
+- playerId(UUID 유사) 생성/저장/로드 (서버 식별자)
 
 외부에서 사용 가능한 함수:
 - SettingsManager.new()
@@ -20,12 +21,14 @@
 - SettingsManager:commitPending(pending)
 - SettingsManager:getNickname()
 - SettingsManager:setNickname(nickname)
+- SettingsManager:getPlayerId()
 - SettingsManager:getSaveDirectory()
 
 주의:
-- 해상도/전체화면은 "저장" 시점에만 applyDisplay로 반영 권장
+- playerId는 UI에 표시하지 않으며 서버/네트워크 식별자 용도이다.
 ]]
 local utf8 = require("utf8")
+
 local SettingsManager = {}
 SettingsManager.__index = SettingsManager
 
@@ -153,6 +156,31 @@ local function _isValidNickname(text)
   return length >= 2 and length <= 15
 end
 
+local function _randomHexByte()
+  local n = love.math.random(0, 255)
+  return string.format("%02x", n)
+end
+
+local function _generatePlayerId()
+  -- UUID v4 유사 형식 (충돌 확률 매우 낮음)
+  -- xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+  local bytes = {}
+  for i = 1, 16 do
+    bytes[i] = love.math.random(0, 255)
+  end
+
+  bytes[7] = (bytes[7] % 16) + 64 -- version 4 (0100xxxx)
+  bytes[9] = (bytes[9] % 64) + 128 -- variant (10xxxxxx)
+
+  local function b(i)
+    return string.format("%02x", bytes[i])
+  end
+
+  return table.concat({
+    b(1), b(2), b(3), b(4), "-", b(5), b(6), "-", b(7), b(8), "-", b(9), b(10), "-", b(11), b(12), b(13), b(14), b(15), b(16)
+  })
+end
+
 function SettingsManager.new()
   local self = setmetatable({}, SettingsManager)
 
@@ -164,6 +192,7 @@ function SettingsManager.new()
   }
 
   self._nickname = "플레이어1"
+  self._playerId = ""
 
   return self
 end
@@ -205,11 +234,25 @@ function SettingsManager:setNickname(nickname)
   return false
 end
 
+function SettingsManager:getPlayerId()
+  if self._playerId and self._playerId ~= "" then
+    return self._playerId
+  end
+
+  -- 방어: 비어 있으면 생성
+  self._playerId = _generatePlayerId()
+  self:save()
+  return self._playerId
+end
+
 function SettingsManager:load()
   local path = Config.SETTINGS_FILE_NAME
   local isExists = love.filesystem.getInfo(path) ~= nil
 
   if not isExists then
+    -- 최초 실행: playerId 생성 후 저장
+    self._playerId = _generatePlayerId()
+    self:save()
     return
   end
 
@@ -241,6 +284,18 @@ function SettingsManager:load()
       self._nickname = "플레이어1"
     end
   end
+
+  if map.playerId then
+    local trimmed = _trim(map.playerId)
+    if trimmed ~= "" then
+      self._playerId = trimmed
+    end
+  end
+
+  if not self._playerId or self._playerId == "" then
+    self._playerId = _generatePlayerId()
+    self:save()
+  end
 end
 
 function SettingsManager:save()
@@ -253,12 +308,14 @@ function SettingsManager:save()
       "sfxVolumePercent",
       "mouseSensitivityPercent",
       "nickname",
+      "playerId",
     },
     displayPresetKey = preset.key,
     bgmVolumePercent = self._applied.bgmVolumePercent,
     sfxVolumePercent = self._applied.sfxVolumePercent,
     mouseSensitivityPercent = self._applied.mouseSensitivityPercent,
     nickname = self:getNickname(),
+    playerId = self._playerId,
   }
 
   local text = serializeKeyValueLines(map)

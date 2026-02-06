@@ -25,6 +25,14 @@ local AssetsModule = require("assets")
 local ConfigModule = require("config")
 local SceneManagerModule = require("scene_manager")
 
+local function _tryChangeScene(sceneName)
+  local ok = SceneManager:change(sceneName)
+  if ok == false then
+    return false
+  end
+  return true
+end
+
 function love.load()
   Config = ConfigModule
 
@@ -36,12 +44,15 @@ function love.load()
 
   Assets = AssetsModule.new()
   SceneManager = SceneManagerModule.new()
-
   App = AppModule.new()
 
   Assets:loadFonts()
 
-  SceneManager:change("BootScene")
+  -- ✅ 장기적 안정성: BootScene이 없거나 로딩 실패 시, 로비로 자동 폴백
+  if not _tryChangeScene("BootScene") then
+    print("BootScene 진입 실패 -> LobbyScene으로 폴백합니다.")
+    _tryChangeScene("LobbyScene")
+  end
 end
 
 function love.update(dt)

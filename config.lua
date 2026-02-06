@@ -13,6 +13,12 @@
 ]]
 local Config = {}
 
+--Config.SERVER_HTTP_BASE = "https://projectr.pangyostonefist.workers.dev"
+--Config.SERVER_WS_BASE = "wss://projectr.pangyostonefist.workers.dev"
+-- 로컬 테스트 시엔 상단 두줄 하단 두줄로 변경: 하단은 로컬 상단은 서버
+Config.SERVER_HTTP_BASE = "http://127.0.0.1:8787"
+Config.SERVER_WS_BASE = "ws://127.0.0.1:8787"
+
 Config.SAVE_IDENTITY = "project_r"
 Config.SETTINGS_FILE_NAME = "settings.ini"
 
@@ -42,5 +48,28 @@ Config.DISPLAY_PRESETS = {
   { key = "Fullscreen_1600x900", label = "전체화면 1600×900", isFullscreen = true, width = 1600, height = 900 },
   { key = "Fullscreen_1920x1080", label = "전체화면 1920×1080", isFullscreen = true, width = 1920, height = 1080 },
 }
+
+-- ================================
+-- 네트워크(Workers + DO + WebSocket)
+-- ================================
+Config.NET_WS_URL = "wss://<YOUR_WORKER_DOMAIN>/ws" -- 예: wss://projectr.yourname.workers.dev/ws
+Config.NET_CONNECT_TIMEOUT_SEC = 10
+
+-- ================================
+-- 보드(임시: 600x600 중앙 고정)
+-- ================================
+Config.BOARD_SIZE = 600
+
+-- ================================
+-- 채팅 레이트리밋(변경 가능)
+-- ================================
+Config.CHAT_RATE_WINDOW_SEC = 10
+Config.CHAT_RATE_MAX_COUNT = 3
+Config.CHAT_RATE_COOLDOWN_SEC = 5
+
+-- ================================
+-- 스냅샷 동기화(호스트 기준)
+-- ================================
+Config.SNAPSHOT_SEND_FINAL_ONLY = true
 
 return Config

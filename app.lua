@@ -5,8 +5,8 @@
 역할:
 - 씬/오버레이를 묶어 업데이트/렌더/입력 라우팅
 - SettingsManager 로드/저장/적용 관리
-- NicknameOverlay 텍스트 입력/IME 조합 전달
-- Method A: 기준 좌표계(1280x720) + 스크린 스케일링 적용(유리/불리 방지)
+- NetClient(WS) 업데이트 및 이벤트 큐 관리
+- 서버 기반 방 생성/참가 흐름 지원
 
 외부에서 사용 가능한 함수:
 - App.new()
@@ -21,15 +21,16 @@
 - App:openSettingsPopup()
 - App:closeOverlay()
 - App:getSettingsManager()
+- App:getNetClient()
+- App:pollNetEvent()
 
 주의:
 - Overlay 입력 우선 처리
-- 스케일은 App에서만 적용(씬/오버레이 내부에서 별도 scale/translate 금지)
 ]]
 local OverlayManager = require("overlay_manager")
 local Utils = require("utils")
 local SettingsManager = require("settings_manager")
-local RenderScale = require("render_scale")
+local NetClient = require("net_client")
 
 local App = {}
 App.__index = App
@@ -39,7 +40,7 @@ function App.new()
 
   self._overlayManager = OverlayManager.new()
   self._settingsManager = SettingsManager.new()
-  self._renderScale = RenderScale.new()
+  self._netClient = NetClient.new()
 
   self._mouseX = 0
   self._mouseY = 0
@@ -49,25 +50,27 @@ function App.new()
   self._settingsManager:applyAudio()
   self._settingsManager:applyInput()
 
+  -- playerId는 load 과정에서 없으면 생성되며, 여기서 확정적으로 확보
+  self._settingsManager:getPlayerId()
+
   return self
 end
 
 function App:update(dt)
   self._mouseX, self._mouseY = love.mouse.getPosition()
-  self._renderScale:update()
 
   self._overlayManager:update(dt)
+
+  self._netClient:update(dt)
+
   SceneManager:update(dt)
 end
 
 function App:draw()
-  self._renderScale:begin()
-
   SceneManager:draw()
+
   self:_drawSettingsButtonIfAllowed()
   self._overlayManager:draw()
-
-  self._renderScale:endDraw()
 end
 
 function App:onKeyPressed(key, scancode, isrepeat)
@@ -89,7 +92,7 @@ function App:onTextInput(text)
     end
   end
 
-  return false
+  return SceneManager:onTextInput(text)
 end
 
 function App:onTextEdited(text, start, length)
@@ -100,45 +103,35 @@ function App:onTextEdited(text, start, length)
     end
   end
 
-  return false
+  return SceneManager:onTextEdited(text, start, length)
 end
 
 function App:onMousePressed(x, y, button, istouch, presses)
-  if button == 1 then
-    if not self._renderScale:isInViewport(x, y) then
-      return true
-    end
-  end
-
-  local wx, wy = self._renderScale:toWorld(x, y)
-
   if self._overlayManager:isOpen() then
-    local isHandled = self._overlayManager:onMousePressed(wx, wy, button, istouch, presses)
+    local isHandled = self._overlayManager:onMousePressed(x, y, button, istouch, presses)
     if isHandled then
       return true
     end
   end
 
   if self:_isSettingsAllowedInCurrentScene() then
-    if self:_handleSettingsButtonClick(wx, wy, button) then
+    if self:_handleSettingsButtonClick(x, y, button) then
       return true
     end
   end
 
-  return SceneManager:onMousePressed(wx, wy, button, istouch, presses)
+  return SceneManager:onMousePressed(x, y, button, istouch, presses)
 end
 
 function App:onMouseReleased(x, y, button, istouch, presses)
-  local wx, wy = self._renderScale:toWorld(x, y)
-
   if self._overlayManager:isOpen() then
-    local isHandled = self._overlayManager:onMouseReleased(wx, wy, button, istouch, presses)
+    local isHandled = self._overlayManager:onMouseReleased(x, y, button, istouch, presses)
     if isHandled then
       return true
     end
   end
 
-  return SceneManager:onMouseReleased(wx, wy, button, istouch, presses)
+  return SceneManager:onMouseReleased(x, y, button, istouch, presses)
 end
 
 function App:openNicknamePopup()
@@ -156,6 +149,14 @@ end
 
 function App:getSettingsManager()
   return self._settingsManager
+end
+
+function App:getNetClient()
+  return self._netClient
+end
+
+function App:pollNetEvent()
+  return self._netClient:poll()
 end
 
 function App:_isSettingsAllowedInCurrentScene()
@@ -177,8 +178,6 @@ function App:_drawSettingsButtonIfAllowed()
     return
   end
 
-  local mouseWX, mouseWY = self._renderScale:toWorld(self._mouseX, self._mouseY)
-
   local rect = {
     x = Config.SETTINGS_BUTTON_X,
     y = Config.SETTINGS_BUTTON_Y,
@@ -186,7 +185,7 @@ function App:_drawSettingsButtonIfAllowed()
     h = Config.SETTINGS_BUTTON_H,
   }
 
-  local isHovered = Utils.isPointInRect(mouseWX, mouseWY, rect.x, rect.y, rect.w, rect.h)
+  local isHovered = Utils.isPointInRect(self._mouseX, self._mouseY, rect.x, rect.y, rect.w, rect.h)
   Utils.drawButton(rect, "환경설정", isHovered)
 end
 

@@ -37,4 +37,13 @@ function Utils.drawPanel(rect, title)
   love.graphics.setFont(Assets:getFont("default"))
 end
 
+function Utils.encodeJson(obj)
+  return love.data.encode("string", "json", obj)
+end
+
+function Utils.decodeJson(text)
+  return love.data.decode("json", text)
+end
+
+
 return Utils
