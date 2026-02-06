@@ -13,6 +13,9 @@
 ]]
 local Config = {}
 
+Config.SAVE_IDENTITY = "project_r"
+Config.SETTINGS_FILE_NAME = "settings.ini"
+
 Config.WINDOW_WIDTH = 1280
 Config.WINDOW_HEIGHT = 720
 
@@ -25,5 +28,14 @@ Config.DEFAULT_FONT_PATH = "assets/fonts/NotoSansKR-Regular.ttf"
 Config.DEFAULT_FONT_SIZE = 22
 Config.SMALL_FONT_SIZE = 18
 Config.TITLE_FONT_SIZE = 32
+
+Config.OVERLAY_PANEL_SCALE = 0.70
+
+Config.DISPLAY_PRESETS = {
+  { key = "Window_1280x720", label = "창모드 (1280×720)", isFullscreen = false, width = 1280, height = 720 },
+  { key = "Fullscreen_1280x720", label = "전체화면 1280×720", isFullscreen = true, width = 1280, height = 720 },
+  { key = "Fullscreen_1600x900", label = "전체화면 1600×900", isFullscreen = true, width = 1600, height = 900 },
+  { key = "Fullscreen_1920x1080", label = "전체화면 1920×1080", isFullscreen = true, width = 1920, height = 1080 },
+}
 
 return Config

@@ -24,13 +24,16 @@ local ConfigModule = require("config")
 local SceneManagerModule = require("scene_manager")
 
 function love.load()
-  -- 기본 세팅
-  love.window.setMode(ConfigModule.WINDOW_WIDTH, ConfigModule.WINDOW_HEIGHT, { resizable = false })
+  Config = ConfigModule
+
+  -- 저장 폴더명(project_r) 고정 (settings.ini 포함)
+  love.filesystem.setIdentity(Config.SAVE_IDENTITY)
+
+  -- 기본 세팅(초기 윈도우: 1280x720)
+  love.window.setMode(Config.WINDOW_WIDTH, Config.WINDOW_HEIGHT, { resizable = false, fullscreen = false })
   love.window.setTitle("알까기 (UI 스켈레톤)")
   love.graphics.setDefaultFilter("nearest", "nearest")
 
-  -- 전역 초기화 (허용 전역만 사용)
-  Config = ConfigModule
   Assets = AssetsModule.new()
   SceneManager = SceneManagerModule.new()
 
@@ -39,7 +42,6 @@ function love.load()
   -- 폰트 로드 (한글 깨짐 방지)
   Assets:loadFonts()
 
-  -- 부트 → 로비로 자연 전환(스켈레톤)
   SceneManager:change("BootScene")
 end
 

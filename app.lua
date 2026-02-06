@@ -5,6 +5,7 @@
 역할:
 - 씬/오버레이를 묶어 업데이트/렌더/입력 라우팅
 - 환경설정 버튼(우상단 고정) 접근 가능한 씬에서만 표시/동작
+- SettingsManager 로드/저장/적용 관리
 
 외부에서 사용 가능한 함수:
 - App.new()
@@ -13,12 +14,17 @@
 - App:onKeyPressed(...)
 - App:onMousePressed(...)
 - App:onMouseReleased(...)
+- App:openNicknamePopup()
+- App:openSettingsPopup()
+- App:closeOverlay()
+- App:getSettingsManager()
 
 주의:
-- 전역 App는 허용 전역
+- Overlay 입력 우선 처리
 ]]
 local OverlayManager = require("overlay_manager")
 local Utils = require("utils")
+local SettingsManager = require("settings_manager")
 
 local App = {}
 App.__index = App
@@ -27,8 +33,16 @@ function App.new()
   local self = setmetatable({}, App)
 
   self._overlayManager = OverlayManager.new()
+  self._settingsManager = SettingsManager.new()
+
   self._mouseX = 0
   self._mouseY = 0
+
+  -- settings.ini 로드 및 초기 적용
+  self._settingsManager:load()
+  self._settingsManager:applyDisplay()
+  self._settingsManager:applyAudio()
+  self._settingsManager:applyInput()
 
   return self
 end
@@ -86,15 +100,28 @@ function App:onMouseReleased(x, y, button, istouch, presses)
   return SceneManager:onMouseReleased(x, y, button, istouch, presses)
 end
 
+function App:openNicknamePopup()
+  self._overlayManager:open("NicknameOverlay", {})
+end
+
+function App:openSettingsPopup()
+  self._overlayManager:open("SettingsOverlay", { settingsManager = self._settingsManager })
+end
+
+function App:closeOverlay()
+  self._overlayManager:close()
+end
+
+function App:getSettingsManager()
+  return self._settingsManager
+end
+
 function App:_isSettingsAllowedInCurrentScene()
-  -- 환경설정 접근 가능 씬: Lobby / WaitingRoom / Match
   local currentName = self:_getCurrentSceneName()
   return currentName == "LobbyScene" or currentName == "WaitingRoomScene" or currentName == "MatchScene"
 end
 
 function App:_getCurrentSceneName()
-  -- 스켈레톤: SceneManager 내부 current 객체에서 name 필드를 사용
-  -- (각 씬 new()에서 self.name 설정)
   local currentScene = SceneManager._current
   if not currentScene then
     return ""
@@ -129,26 +156,12 @@ function App:_handleSettingsButtonClick(x, y, button)
     return false
   end
 
-  if self._overlayManager:isOpen() then
-    -- 환경설정 버튼은 "환경설정 팝업 토글"로 동작
-    self._overlayManager:close()
-    return true
+  -- 환경설정은 토글이 아니라 "열기"로 고정 (이탈 방지: 배경 클릭 닫기 금지)
+  if not self._overlayManager:isOpen() then
+    self:openSettingsPopup()
   end
 
-  self._overlayManager:open("SettingsOverlay", {})
   return true
-end
-
-function App:openNicknamePopup()
-  self._overlayManager:open("NicknameOverlay", {})
-end
-
-function App:closeOverlay()
-  self._overlayManager:close()
-end
-
-function App:isOverlayOpen()
-  return self._overlayManager:isOpen()
 end
 
 return App
