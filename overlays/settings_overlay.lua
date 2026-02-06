@@ -4,7 +4,7 @@
 
 역할:
 - 환경설정 팝업 UI
-- 디스플레이 프리셋(창모드 고정 1280x720 + 전체화면 3종)
+- 디스플레이 프리셋(창모드 1280x720 + 전체화면 3종)
 - 볼륨(BGM/SFX), 마우스 감도 슬라이더
 - 저장/취소 버튼
 - settings.ini 저장 및 적용
@@ -48,14 +48,13 @@ function SettingsOverlay.new(params)
   self._mouseX = 0
   self._mouseY = 0
 
-  local screenW, screenH = love.graphics.getDimensions()
-  self._screenW = screenW
-  self._screenH = screenH
+  self._screenW = Config.BASE_WIDTH
+  self._screenH = Config.BASE_HEIGHT
 
-  self._panelW = math.floor(screenW * Config.OVERLAY_PANEL_SCALE)
-  self._panelH = math.floor(screenH * Config.OVERLAY_PANEL_SCALE)
-  self._panelX = math.floor((screenW - self._panelW) / 2)
-  self._panelY = math.floor((screenH - self._panelH) / 2)
+  self._panelW = math.floor(self._screenW * Config.OVERLAY_PANEL_SCALE)
+  self._panelH = math.floor(self._screenH * Config.OVERLAY_PANEL_SCALE)
+  self._panelX = math.floor((self._screenW - self._panelW) / 2)
+  self._panelY = math.floor((self._screenH - self._panelH) / 2)
 
   self._panelRect = { x = self._panelX, y = self._panelY, w = self._panelW, h = self._panelH }
 
@@ -99,7 +98,6 @@ function SettingsOverlay.new(params)
   }
 
   self._pending = self._settingsManager:copyAppliedAsPending()
-
   self._draggingSliderKey = nil
 
   return self
@@ -107,10 +105,14 @@ end
 
 function SettingsOverlay:update(dt)
   self._mouseX, self._mouseY = love.mouse.getPosition()
+
+  if self._draggingSliderKey then
+    self:_setSliderByMouse(self._draggingSliderKey, self._mouseX)
+  end
 end
 
 function SettingsOverlay:draw()
-  -- 뒤 화면 보이도록 딤 처리
+  -- 뒤 화면 보이도록 딤(기준 해상도 전체)
   love.graphics.setColor(0, 0, 0, 0.45)
   love.graphics.rectangle("fill", 0, 0, self._screenW, self._screenH)
   love.graphics.setColor(1, 1, 1, 1)
@@ -132,20 +134,17 @@ function SettingsOverlay:draw()
   love.graphics.printf("환경설정", self._panelX, self._titleY, self._panelW, "center")
   love.graphics.setFont(Assets:getFont("default"))
 
-  -- 행 렌더
   self:_drawDisplayRow(1)
   self:_drawSliderRow(2, "BGM 볼륨", "bgmVolumePercent", self._pending.bgmVolumePercent)
   self:_drawSliderRow(3, "SFX 볼륨", "sfxVolumePercent", self._pending.sfxVolumePercent)
   self:_drawSliderRow(4, "마우스 감도", "mouseSensitivityPercent", self._pending.mouseSensitivityPercent)
 
-  -- 저장/취소 버튼
   local isSaveHovered = Utils.isPointInRect(self._mouseX, self._mouseY, self._saveRect.x, self._saveRect.y, self._saveRect.w, self._saveRect.h)
   Utils.drawButton(self._saveRect, "저장", isSaveHovered)
 
   local isCancelHovered = Utils.isPointInRect(self._mouseX, self._mouseY, self._cancelRect.x, self._cancelRect.y, self._cancelRect.w, self._cancelRect.h)
   Utils.drawButton(self._cancelRect, "취소", isCancelHovered)
 
-  -- 저장 위치 표시(디버깅용)
   love.graphics.setFont(Assets:getFont("small"))
   local saveDir = self._settingsManager:getSaveDirectory()
   local line = "설정 파일 위치: " .. saveDir .. "/" .. Config.SETTINGS_FILE_NAME
@@ -154,7 +153,6 @@ function SettingsOverlay:draw()
 end
 
 function SettingsOverlay:onKeyPressed(key, scancode, isrepeat)
-  -- 이탈 방지 우선: Esc는 "취소"로만 동작
   if key == "escape" then
     App:closeOverlay()
     return true
@@ -178,7 +176,6 @@ function SettingsOverlay:onMousePressed(x, y, button, istouch, presses)
     return true
   end
 
-  -- 버튼 처리
   if Utils.isPointInRect(x, y, self._saveRect.x, self._saveRect.y, self._saveRect.w, self._saveRect.h) then
     self:_handleSave()
     return true
@@ -189,18 +186,15 @@ function SettingsOverlay:onMousePressed(x, y, button, istouch, presses)
     return true
   end
 
-  -- 패널 내부 클릭만 허용(바깥 클릭으로 닫히지 않음)
   local isInsidePanel = Utils.isPointInRect(x, y, self._panelRect.x, self._panelRect.y, self._panelRect.w, self._panelRect.h)
   if not isInsidePanel then
     return true
   end
 
-  -- 디스플레이 프리셋 좌우 버튼
   if self:_handleDisplayRowClick(x, y) then
     return true
   end
 
-  -- 슬라이더 클릭 점프 + 드래그 시작
   local sliderKey = self:_hitTestSlider(x, y)
   if sliderKey then
     self._draggingSliderKey = sliderKey
@@ -221,18 +215,14 @@ function SettingsOverlay:onMouseReleased(x, y, button, istouch, presses)
 end
 
 function SettingsOverlay:_handleSave()
-  -- pending -> applied 커밋
   self._settingsManager:commitPending(self._pending)
 
-  -- 적용(해상도/전체화면은 저장 시점에만)
   self._settingsManager:applyDisplay()
   self._settingsManager:applyAudio()
   self._settingsManager:applyInput()
 
-  -- 저장
   self._settingsManager:save()
 
-  -- 환경설정 닫기
   App:closeOverlay()
 end
 
@@ -243,10 +233,8 @@ end
 function SettingsOverlay:_drawDisplayRow(rowIndex)
   local y = self:_rowY(rowIndex)
 
-  -- 라벨
   love.graphics.printf("화면 설정", self._labelX, y + 14, self._labelW, "left")
 
-  -- 컨트롤 영역: 좌/우 버튼 + 현재 선택 라벨
   local controlRect = { x = self._controlX, y = y, w = self._controlW, h = self._rowH }
 
   local arrowW = 44
@@ -261,10 +249,9 @@ function SettingsOverlay:_drawDisplayRow(rowIndex)
   Utils.drawButton(rightRect, ">", isRightHovered)
 
   love.graphics.rectangle("line", labelRect.x, labelRect.y, labelRect.w, labelRect.h)
+
   local preset = Config.DISPLAY_PRESETS[self._pending.displayPresetIndex]
   love.graphics.printf(preset.label, labelRect.x + 8, labelRect.y + 12, labelRect.w - 16, "center")
-
-  -- 우측 value 칼럼은 비움(퍼센트 없음)
 end
 
 function SettingsOverlay:_handleDisplayRowClick(x, y)
@@ -306,14 +293,11 @@ end
 function SettingsOverlay:_drawSliderRow(rowIndex, label, sliderKey, percentValue)
   local y = self:_rowY(rowIndex)
 
-  -- 라벨
   love.graphics.printf(label, self._labelX, y + 14, self._labelW, "left")
 
-  -- 슬라이더 컨트롤
   local sliderRect = self:_getSliderRectForRow(rowIndex)
   self:_drawSlider(sliderRect, percentValue)
 
-  -- 우측 % 텍스트
   local percentText = tostring(percentValue) .. "%"
   love.graphics.printf(percentText, self._valueX, y + 14, self._valueW, "left")
 end
@@ -330,14 +314,11 @@ function SettingsOverlay:_getSliderRectForRow(rowIndex)
 end
 
 function SettingsOverlay:_drawSlider(rect, percentValue)
-  -- 트랙
   love.graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h)
 
-  -- 채움
   local fillW = math.floor(rect.w * (percentValue / 100))
   love.graphics.rectangle("line", rect.x + 2, rect.y + 2, math.max(0, fillW - 4), rect.h - 4)
 
-  -- 손잡이
   local thumbX = rect.x + fillW
   local thumbW = 10
   local thumbRect = {
@@ -384,27 +365,6 @@ function SettingsOverlay:_setSliderByMouse(sliderKey, mouseX)
 
   local percentValue = clampNumber(roundNumber(t * 100), 0, 100)
   self._pending[sliderKey] = percentValue
-end
-
-function SettingsOverlay:onMouseMoved(x, y, dx, dy, istouch)
-  -- LÖVE 콜백에 연결하지 않았더라도, update에서 dragging 처리 가능.
-  -- 현재 구조에서는 update에서 직접 처리하지 않으므로, 드래그는 mousepressed 후
-  -- onMousePressed에서 시작되며, 아래 로직을 위해 update에서 확인한다.
-end
-
-function SettingsOverlay:_updateDragging()
-  if not self._draggingSliderKey then
-    return
-  end
-
-  self:_setSliderByMouse(self._draggingSliderKey, self._mouseX)
-end
-
--- update에서 드래그 반영
-local originalUpdate = SettingsOverlay.update
-function SettingsOverlay:update(dt)
-  originalUpdate(self, dt)
-  self:_updateDragging()
 end
 
 return SettingsOverlay

@@ -48,8 +48,16 @@ function LobbyScene:update(dt)
 end
 
 function LobbyScene:draw()
+  local nickname = "플레이어1"
+  if App and App.getSettingsManager then
+    local settingsManager = App:getSettingsManager()
+    if settingsManager and settingsManager.getNickname then
+      nickname = settingsManager:getNickname()
+    end
+  end
+
   love.graphics.setFont(Assets:getFont("title"))
-  love.graphics.printf("로비", 0, 50, Config.WINDOW_WIDTH, "center")
+  love.graphics.printf("안녕하세요 " .. nickname .. "님", 0, 50, Config.WINDOW_WIDTH, "center")
   love.graphics.setFont(Assets:getFont("default"))
 
   for _, b in ipairs(self._buttons) do

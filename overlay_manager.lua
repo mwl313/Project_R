@@ -4,7 +4,7 @@
 
 역할:
 - 팝업(오버레이) 열기/닫기/입력 우선 처리
-- 환경설정(여러 씬에서 접근), 닉네임 변경(로비 전용)
+- 텍스트 입력(textinput) 및 IME 조합(textedited) 전달
 
 외부에서 사용 가능한 함수:
 - OverlayManager.new()
@@ -14,6 +14,8 @@
 - OverlayManager:update(dt)
 - OverlayManager:draw()
 - OverlayManager:onKeyPressed(...)
+- OverlayManager:onTextInput(text)
+- OverlayManager:onTextEdited(text, start, length)
 - OverlayManager:onMousePressed(...)
 - OverlayManager:onMouseReleased(...)
 
@@ -74,6 +76,30 @@ function OverlayManager:onKeyPressed(key, scancode, isrepeat)
   end
 
   return self._current:onKeyPressed(key, scancode, isrepeat)
+end
+
+function OverlayManager:onTextInput(text)
+  if not self._current then
+    return false
+  end
+
+  if not self._current.onTextInput then
+    return false
+  end
+
+  return self._current:onTextInput(text)
+end
+
+function OverlayManager:onTextEdited(text, start, length)
+  if not self._current then
+    return false
+  end
+
+  if not self._current.onTextEdited then
+    return false
+  end
+
+  return self._current:onTextEdited(text, start, length)
 end
 
 function OverlayManager:onMousePressed(x, y, button, istouch, presses)

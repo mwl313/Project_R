@@ -16,10 +16,15 @@ local Config = {}
 Config.SAVE_IDENTITY = "project_r"
 Config.SETTINGS_FILE_NAME = "settings.ini"
 
+-- 기준 해상도(월드 좌표계 기준)
+Config.BASE_WIDTH = 1280
+Config.BASE_HEIGHT = 720
+
+-- 초기 창모드(항상 1280x720)
 Config.WINDOW_WIDTH = 1280
 Config.WINDOW_HEIGHT = 720
 
-Config.SETTINGS_BUTTON_X = Config.WINDOW_WIDTH - 140
+Config.SETTINGS_BUTTON_X = Config.BASE_WIDTH - 140
 Config.SETTINGS_BUTTON_Y = 16
 Config.SETTINGS_BUTTON_W = 124
 Config.SETTINGS_BUTTON_H = 40

@@ -6,6 +6,7 @@
 - 환경설정 값의 로드/검증/저장(settings.ini)
 - 디스플레이(창모드 고정 1280x720 + 전체화면 3종) 적용
 - 볼륨(BGM/SFX), 마우스 감도 값 관리
+- 닉네임(한글/영문/숫자만, 2~15글자) 저장/로드
 
 외부에서 사용 가능한 함수:
 - SettingsManager.new()
@@ -17,10 +18,14 @@
 - SettingsManager:getApplied()
 - SettingsManager:copyAppliedAsPending()
 - SettingsManager:commitPending(pending)
+- SettingsManager:getNickname()
+- SettingsManager:setNickname(nickname)
+- SettingsManager:getSaveDirectory()
 
 주의:
-- 해상도/전체화면은 "저장" 시점에만 applyDisplay로 반영하는 설계를 권장
+- 해상도/전체화면은 "저장" 시점에만 applyDisplay로 반영 권장
 ]]
+local utf8 = require("utf8")
 local SettingsManager = {}
 SettingsManager.__index = SettingsManager
 
@@ -34,6 +39,13 @@ local function clampNumber(value, minValue, maxValue)
   return value
 end
 
+local function _trim(text)
+  if not text then
+    return ""
+  end
+  return (string.match(text, "^%s*(.-)%s*$") or "")
+end
+
 local function parseKeyValueLines(text)
   local result = {}
 
@@ -42,12 +54,12 @@ local function parseKeyValueLines(text)
   end
 
   for line in string.gmatch(text, "([^\r\n]+)") do
-    local trimmed = string.match(line, "^%s*(.-)%s*$")
+    local trimmed = _trim(line)
     if trimmed ~= "" and string.sub(trimmed, 1, 1) ~= "#" then
       local key, value = string.match(trimmed, "^([^=]+)=(.*)$")
       if key and value then
-        key = string.match(key, "^%s*(.-)%s*$")
-        value = string.match(value, "^%s*(.-)%s*$")
+        key = _trim(key)
+        value = _trim(value)
         result[key] = value
       end
     end
@@ -65,7 +77,7 @@ local function serializeKeyValueLines(map)
 
   for _, key in ipairs(map._order) do
     local value = map[key]
-    table.insert(lines, key .. "=" .. tostring(value))
+    table.insert(lines, key .. "=" .. tostring(value or ""))
   end
 
   table.insert(lines, "")
@@ -81,6 +93,66 @@ local function findPresetIndexByKey(key)
   return 1
 end
 
+local function _isAllowedNicknameCodepoint(codepoint)
+  if codepoint >= 0x30 and codepoint <= 0x39 then
+    return true
+  end
+  if codepoint >= 0x41 and codepoint <= 0x5A then
+    return true
+  end
+  if codepoint >= 0x61 and codepoint <= 0x7A then
+    return true
+  end
+
+  -- Hangul Jamo
+  if codepoint >= 0x1100 and codepoint <= 0x11FF then
+    return true
+  end
+  -- Hangul Compatibility Jamo
+  if codepoint >= 0x3130 and codepoint <= 0x318F then
+    return true
+  end
+  -- Hangul Syllables
+  if codepoint >= 0xAC00 and codepoint <= 0xD7A3 then
+    return true
+  end
+
+  return false
+end
+
+local function _filterNickname(text)
+  if not text or text == "" then
+    return ""
+  end
+
+  local buffer = {}
+  for _, codepoint in utf8.codes(text) do
+    if _isAllowedNicknameCodepoint(codepoint) then
+      table.insert(buffer, utf8.char(codepoint))
+    end
+  end
+
+  return table.concat(buffer)
+end
+
+local function _getUtf8Len(text)
+  local length = utf8.len(text)
+  if not length then
+    return 0
+  end
+  return length
+end
+
+local function _isValidNickname(text)
+  local filtered = _filterNickname(text)
+  if filtered ~= text then
+    return false
+  end
+
+  local length = _getUtf8Len(text)
+  return length >= 2 and length <= 15
+end
+
 function SettingsManager.new()
   local self = setmetatable({}, SettingsManager)
 
@@ -90,6 +162,8 @@ function SettingsManager.new()
     sfxVolumePercent = 70,
     mouseSensitivityPercent = 50,
   }
+
+  self._nickname = "플레이어1"
 
   return self
 end
@@ -112,6 +186,23 @@ function SettingsManager:commitPending(pending)
   self._applied.bgmVolumePercent = clampNumber(pending.bgmVolumePercent, 0, 100)
   self._applied.sfxVolumePercent = clampNumber(pending.sfxVolumePercent, 0, 100)
   self._applied.mouseSensitivityPercent = clampNumber(pending.mouseSensitivityPercent, 0, 100)
+end
+
+function SettingsManager:getNickname()
+  if self._nickname and self._nickname ~= "" then
+    return self._nickname
+  end
+  return "플레이어1"
+end
+
+function SettingsManager:setNickname(nickname)
+  local trimmed = _trim(nickname)
+  if _isValidNickname(trimmed) then
+    self._nickname = trimmed
+    return true
+  end
+
+  return false
 end
 
 function SettingsManager:load()
@@ -141,6 +232,15 @@ function SettingsManager:load()
   if map.mouseSensitivityPercent then
     self._applied.mouseSensitivityPercent = clampNumber(tonumber(map.mouseSensitivityPercent) or self._applied.mouseSensitivityPercent, 0, 100)
   end
+
+  if map.nickname then
+    local trimmed = _trim(map.nickname)
+    if _isValidNickname(trimmed) then
+      self._nickname = trimmed
+    else
+      self._nickname = "플레이어1"
+    end
+  end
 end
 
 function SettingsManager:save()
@@ -152,11 +252,13 @@ function SettingsManager:save()
       "bgmVolumePercent",
       "sfxVolumePercent",
       "mouseSensitivityPercent",
+      "nickname",
     },
     displayPresetKey = preset.key,
     bgmVolumePercent = self._applied.bgmVolumePercent,
     sfxVolumePercent = self._applied.sfxVolumePercent,
     mouseSensitivityPercent = self._applied.mouseSensitivityPercent,
+    nickname = self:getNickname(),
   }
 
   local text = serializeKeyValueLines(map)
@@ -177,13 +279,11 @@ end
 function SettingsManager:applyAudio()
   -- 스켈레톤 단계:
   -- 실제로 AudioManager가 생기면 여기서 master/bgm/sfx 볼륨을 적용하도록 연결
-  -- 지금은 값만 유지하며, 추후 setVolume 적용 지점을 이 함수에 연결하면 됨.
 end
 
 function SettingsManager:applyInput()
   -- 스켈레톤 단계:
-  -- 마우스 감도는 조준/드래그 계산 시
-  -- "스크린→월드 변환 이후 벡터"에 곱하는 형태로 반영 권장.
+  -- 마우스 감도는 추후 조준/드래그 계산에서 반영
 end
 
 function SettingsManager:getSaveDirectory()
