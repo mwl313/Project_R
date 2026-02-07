@@ -7,7 +7,7 @@
 - SettingsManager 로드/저장/적용 관리
 - RenderScale 적용(월드 좌표 1280x720 고정 + 스크린 스케일링)
 - Overlay 입력 우선 처리 후, SceneManager로 입력 전달
-- NetManager 업데이트 및 이벤트 폴링 제공(getNetManager / pollNetEvent)
+- NetManager 업데이트 및 제공(getNetManager)
 
 외부에서 사용 가능한 함수:
 - App.new()
@@ -23,7 +23,6 @@
 - App:closeOverlay()
 - App:getSettingsManager()
 - App:getNetManager()
-- App:pollNetEvent()
 
 주의:
 - Overlay 입력 우선 처리
@@ -45,15 +44,8 @@ function App.new()
   self._overlayManager = OverlayManager.new()
   self._settingsManager = SettingsManager.new()
   self._renderScale = RenderScale.new()
-
-  -- 네트워크(웹소켓) 매니저
   self._netManager = NetManager.new()
 
-  -- NetManager 이벤트를 단일 pop 방식으로 제공하기 위한 큐
-  self._netEventQueue = {}
-
-  self._mouseScreenX = 0
-  self._mouseScreenY = 0
   self._mouseWorldX = 0
   self._mouseWorldY = 0
 
@@ -66,22 +58,21 @@ function App.new()
 end
 
 function App:update(dt)
-  self._mouseScreenX, self._mouseScreenY = love.mouse.getPosition()
-  self._mouseWorldX, self._mouseWorldY = self._renderScale:toWorld(self._mouseScreenX, self._mouseScreenY)
+  self._renderScale:update()
 
-  -- NetManager 업데이트 + 이벤트 누적
+  local mx, my = love.mouse.getPosition()
+  self._mouseWorldX, self._mouseWorldY = self._renderScale:toWorld(mx, my)
+
   self._netManager:update(dt)
-  self:_drainNetEvents()
-
   self._overlayManager:update(dt)
   SceneManager:update(dt)
 end
 
 function App:draw()
-  -- 월드 좌표(1280x720)로 통일된 렌더링 파이프라인
   self._renderScale:begin()
 
   SceneManager:draw()
+
   self:_drawSettingsButtonIfAllowed()
   self._overlayManager:draw()
 
@@ -122,41 +113,35 @@ function App:onTextEdited(text, start, length)
 end
 
 function App:onMousePressed(x, y, button, istouch, presses)
-  if button == 1 then
-    if not self._renderScale:isInViewport(x, y) then
-      return true
-    end
-  end
-
-  local worldX, worldY = self._renderScale:toWorld(x, y)
+  local wx, wy = self._renderScale:toWorld(x, y)
 
   if self._overlayManager:isOpen() then
-    local isHandled = self._overlayManager:onMousePressed(worldX, worldY, button, istouch, presses)
+    local isHandled = self._overlayManager:onMousePressed(wx, wy, button, istouch, presses)
     if isHandled then
       return true
     end
   end
 
   if self:_isSettingsAllowedInCurrentScene() then
-    if self:_handleSettingsButtonClick(worldX, worldY, button) then
+    if self:_handleSettingsButtonClick(wx, wy, button) then
       return true
     end
   end
 
-  return SceneManager:onMousePressed(worldX, worldY, button, istouch, presses)
+  return SceneManager:onMousePressed(wx, wy, button, istouch, presses)
 end
 
 function App:onMouseReleased(x, y, button, istouch, presses)
-  local worldX, worldY = self._renderScale:toWorld(x, y)
+  local wx, wy = self._renderScale:toWorld(x, y)
 
   if self._overlayManager:isOpen() then
-    local isHandled = self._overlayManager:onMouseReleased(worldX, worldY, button, istouch, presses)
+    local isHandled = self._overlayManager:onMouseReleased(wx, wy, button, istouch, presses)
     if isHandled then
       return true
     end
   end
 
-  return SceneManager:onMouseReleased(worldX, worldY, button, istouch, presses)
+  return SceneManager:onMouseReleased(wx, wy, button, istouch, presses)
 end
 
 function App:openNicknamePopup()
@@ -178,26 +163,6 @@ end
 
 function App:getNetManager()
   return self._netManager
-end
-
--- WaitingRoomScene 같은 씬에서 while loop로 poll하는 형태를 지원
-function App:pollNetEvent()
-  if #self._netEventQueue <= 0 then
-    return nil
-  end
-  return table.remove(self._netEventQueue, 1)
-end
-
-function App:_drainNetEvents()
-  -- NetManager가 이벤트 배열을 반환하는 구조를 가정 (현재 베이스에 맞춤)
-  local events = self._netManager:popEvents()
-  if not events then
-    return
-  end
-
-  for _, ev in ipairs(events) do
-    table.insert(self._netEventQueue, ev)
-  end
 end
 
 function App:_isSettingsAllowedInCurrentScene()

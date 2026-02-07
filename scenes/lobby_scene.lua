@@ -3,9 +3,9 @@
 모듈명: LobbyScene
 
 역할:
-- 메인 로비 UI
-- 방 생성/방 찾기/가이드/스킨/크레딧/닉네임 변경/게임 종료 제공
-- 방 생성은 서버에서 roomCode 생성 후 대기방으로 이동
+- 로비 UI(방 생성/방 찾기/닉네임 변경/가이드/스킨/크레딧/게임 종료)
+- 서버 HTTP(/room/create)로 방 생성 처리
+- 성공 시 WaitingRoomScene으로 이동(호스트, wsUrl 포함)
 
 외부에서 사용 가능한 함수:
 - LobbyScene.new(params)
@@ -13,10 +13,12 @@
 - LobbyScene:draw()
 - LobbyScene:onMousePressed(...)
 - LobbyScene:onKeyPressed(...)
+- LobbyScene:onTextInput(text)
 
 주의:
-- 게임 종료는 버튼이며 즉시 종료(love.event.quit)
-- 닉네임 변경은 팝업(Overlay)으로만 처리
+- 버튼/화면 배치는 “정상 동작하던 로비(버튼/씬 전환)” 기준을 유지한다.
+- 서버 응답은 문자열(JSON) 또는 테이블일 수 있으므로 둘 다 안전하게 처리한다.
+- WaitingRoomScene 이동 시 wsUrl을 반드시 전달한다.
 ]]
 local Utils = require("utils")
 local HttpClient = require("http_client")
@@ -24,50 +26,88 @@ local HttpClient = require("http_client")
 local LobbyScene = {}
 LobbyScene.__index = LobbyScene
 
-function LobbyScene.new(params)
+local function _asString(v)
+  if v == nil then
+    return ""
+  end
+  if type(v) == "string" then
+    return v
+  end
+  return tostring(v)
+end
+
+local function _extractFieldAsString(resp, key)
+  if resp == nil then
+    return ""
+  end
+
+  if type(resp) == "table" then
+    local v = resp[key]
+    return _asString(v)
+  end
+
+  local raw = _asString(resp)
+  return string.match(raw, "\"" .. key .. "\"%s*:%s*\"([^\"]*)\"") or ""
+end
+
+local function _extractFieldAsBool(resp, key)
+  if resp == nil then
+    return false
+  end
+
+  if type(resp) == "table" then
+    return resp[key] == true
+  end
+
+  local raw = _asString(resp)
+  return string.match(raw, "\"" .. key .. "\"%s*:%s*true") ~= nil
+end
+
+function LobbyScene.new(_params)
   local self = setmetatable({}, LobbyScene)
 
   self.name = "LobbyScene"
 
-  self._buttons = {
-    { key = "createRoom", label = "방 생성", x = 80, y = 160, w = 260, h = 56 },
-    { key = "findRoom", label = "방 찾기", x = 80, y = 230, w = 260, h = 56 },
-    { key = "nickname", label = "닉네임 변경", x = 80, y = 300, w = 260, h = 56 },
-    { key = "guide", label = "게임 가이드", x = 80, y = 370, w = 260, h = 56 },
-    { key = "skin", label = "스킨 변경", x = 80, y = 440, w = 260, h = 56 },
-    { key = "credits", label = "크레딧", x = 80, y = 510, w = 260, h = 56 },
-    { key = "quit", label = "게임 종료", x = 80, y = 580, w = 260, h = 56 },
-  }
-
   self._statusText = ""
+
+  -- ※ 이 버튼 배치/구성은 “버튼/화면이 멀쩡했던 버전(lobby_scene2)”을 유지
+  self._buttons = {
+    { key = "createRoom", label = "방 생성", x = 80, y = 160, w = 360, h = 58 },
+    { key = "findRoom", label = "방 찾기", x = 80, y = 230, w = 360, h = 58 },
+    { key = "changeName", label = "닉네임 변경", x = 80, y = 300, w = 360, h = 58 },
+    { key = "gameGuide", label = "게임 가이드", x = 80, y = 370, w = 360, h = 58 },
+    { key = "skin", label = "스킨 변경", x = 80, y = 440, w = 360, h = 58 },
+    { key = "credits", label = "크레딧", x = 80, y = 510, w = 360, h = 58 },
+    { key = "exit", label = "게임 종료", x = 80, y = 668, w = 360, h = 58 },
+  }
 
   return self
 end
 
 function LobbyScene:update(_dt)
-  -- 상태 텍스트는 필요 시 유지
 end
 
 function LobbyScene:draw()
-  local nickname = App:getSettingsManager():getNickname()
+  local nickname = "플레이어"
+  if App and App.getSettingsManager then
+    nickname = App:getSettingsManager():getNickname()
+  end
+
   love.graphics.setFont(Assets:getFont("title"))
-  love.graphics.print("안녕하세요 " .. nickname .. "님", 80, 80)
+  love.graphics.print("안녕하세요 " .. tostring(nickname) .. "님", 80, 80)
 
   love.graphics.setFont(Assets:getFont("default"))
+  if self._statusText ~= "" then
+    love.graphics.print(self._statusText, 80, 120)
+  end
 
   for _, btn in ipairs(self._buttons) do
+    -- draw는 RenderScale.begin() 내부에서 호출되므로 “월드 좌표” 기준이 맞다.
+    -- hover는 참고용 UI이므로 기존 방식 유지(클릭 판정은 App에서 월드좌표로 변환되어 정확히 들어옴)
     local mx, my = love.mouse.getPosition()
     local isHovered = Utils.isPointInRect(mx, my, btn.x, btn.y, btn.w, btn.h)
     Utils.drawButton({ x = btn.x, y = btn.y, w = btn.w, h = btn.h }, btn.label, isHovered)
   end
-
-  if self._statusText ~= "" then
-    love.graphics.print(self._statusText, 80, 130)
-  end
-end
-
-function LobbyScene:onKeyPressed(_key, _scancode, _isrepeat)
-  return false
 end
 
 function LobbyScene:onMousePressed(x, y, button, _istouch, _presses)
@@ -77,69 +117,100 @@ function LobbyScene:onMousePressed(x, y, button, _istouch, _presses)
 
   for _, btn in ipairs(self._buttons) do
     if Utils.isPointInRect(x, y, btn.x, btn.y, btn.w, btn.h) then
-      self:_handleButton(btn.key)
-      return true
+      if btn.key == "createRoom" then
+        self:_handleCreateRoom()
+        return true
+      end
+
+      if btn.key == "findRoom" then
+        self._statusText = ""
+        SceneManager:change("RoomSearchScene")
+        return true
+      end
+
+      if btn.key == "changeName" then
+        self._statusText = ""
+        if App and App.openNicknamePopup then
+          App:openNicknamePopup()
+        else
+          self._statusText = "닉네임 변경을 열 수 없습니다(App 연동 확인 필요)."
+        end
+        return true
+      end
+
+      if btn.key == "gameGuide" then
+        self._statusText = ""
+        SceneManager:change("GameGuideScene")
+        return true
+      end
+
+      if btn.key == "skin" then
+        self._statusText = ""
+        SceneManager:change("SkinChangeScene")
+        return true
+      end
+
+      if btn.key == "credits" then
+        self._statusText = ""
+        SceneManager:change("CreditsScene")
+        return true
+      end
+
+      if btn.key == "exit" then
+        love.event.quit()
+        return true
+      end
     end
   end
 
   return false
 end
 
-function LobbyScene:_handleButton(key)
-  if key == "createRoom" then
-    self:_createRoomAndGoWaitingRoom()
-    return
+function LobbyScene:onKeyPressed(key, _scancode, _isrepeat)
+  if key == "escape" then
+    return true
   end
-
-  if key == "findRoom" then
-    SceneManager:change("RoomSearchScene")
-    return
-  end
-
-  if key == "guide" then
-    SceneManager:change("GameGuideScene")
-    return
-  end
-
-  if key == "skin" then
-    SceneManager:change("SkinChangeScene")
-    return
-  end
-
-  if key == "credits" then
-    SceneManager:change("CreditsScene")
-    return
-  end
-
-  if key == "nickname" then
-    App:openNicknamePopup()
-    return
-  end
-
-  if key == "quit" then
-    love.event.quit()
-    return
-  end
+  return false
 end
 
-function LobbyScene:_createRoomAndGoWaitingRoom()
-  self._statusText = "방 생성 중..."
+function LobbyScene:onTextInput(_text)
+  return false
+end
 
+function LobbyScene:_handleCreateRoom()
   local url = Config.SERVER_HTTP_BASE .. "/room/create"
-  local response, err = HttpClient.postJson(url, {})
 
-  if err then
-    self._statusText = "방 생성 실패: " .. tostring(err)
+  local resp, err = HttpClient.postJson(url, {})
+  if not resp then
+    self._statusText = "방 생성 실패: " .. tostring(err or "응답 오류")
     return
   end
 
-  if not response or not response.roomCode then
-    self._statusText = "방 생성 실패: 응답 오류"
+  local ok = _extractFieldAsBool(resp, "ok")
+  if not ok then
+    local errorCode = _extractFieldAsString(resp, "error")
+    if errorCode ~= "" then
+      self._statusText = "방 생성 실패: " .. errorCode
+    else
+      self._statusText = "방 생성 실패: ok=false"
+    end
+    return
+  end
+
+  local roomCode = _extractFieldAsString(resp, "roomCode")
+  local wsUrl = _extractFieldAsString(resp, "wsUrl")
+
+  if roomCode == "" or wsUrl == "" then
+    self._statusText = "방 생성 실패: wsUrl/roomCode 누락"
     return
   end
 
   self._statusText = ""
-  SceneManager:change("WaitingRoomScene", { isHost = true, roomCode = response.roomCode })
+  SceneManager:change("WaitingRoomScene", {
+    isHost = true,
+    roomCode = roomCode,
+    wsUrl = wsUrl,
+  })
 end
 
 return LobbyScene

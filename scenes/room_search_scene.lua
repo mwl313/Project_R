@@ -17,6 +17,7 @@
 
 주의:
 - 이 씬은 “방 참가”에만 집중한다. (로비 UI는 유지)
+- HttpClient.postJson 구현에 따라 table 또는 string(JSON)을 반환할 수 있으므로 양쪽을 모두 처리한다.
 ]]
 local Utils = require("utils")
 local HttpClient = require("http_client")
@@ -32,10 +33,51 @@ local function _trim(text)
 end
 
 local function _extractJsonString(raw, key)
-  if not raw then
+  if type(raw) ~= "string" then
     return ""
   end
   return string.match(raw, "\"" .. key .. "\"%s*:%s*\"([^\"]*)\"") or ""
+end
+
+local function _extractJsonBool(raw, key)
+  if type(raw) ~= "string" then
+    return false
+  end
+
+  local s = string.match(raw, "\"" .. key .. "\"%s*:%s*(true|false)")
+  return s == "true"
+end
+
+local function _normalizeJoinResponse(body)
+  if type(body) == "table" then
+    return {
+      ok = body.ok == true,
+      roomCode = tostring(body.roomCode or ""),
+      token = tostring(body.token or ""),
+      wsUrl = tostring(body.wsUrl or ""),
+    }
+  end
+
+  if type(body) == "string" then
+    local ok = _extractJsonBool(body, "ok")
+    local roomCode = _extractJsonString(body, "roomCode")
+    local token = _extractJsonString(body, "token")
+    local wsUrl = _extractJsonString(body, "wsUrl")
+
+    return {
+      ok = ok,
+      roomCode = tostring(roomCode or ""),
+      token = tostring(token or ""),
+      wsUrl = tostring(wsUrl or ""),
+    }
+  end
+
+  return {
+    ok = false,
+    roomCode = "",
+    token = "",
+    wsUrl = "",
+  }
 end
 
 function RoomSearchScene.new(_params)
@@ -179,25 +221,23 @@ function RoomSearchScene:_tryJoin()
     return
   end
 
-  local ok = string.match(body, "\"ok\"%s*:%s*true") ~= nil
-  if not ok then
+  local normalized = _normalizeJoinResponse(body)
+  if not normalized.ok then
     self._statusText = "참가 실패: 서버 응답 오류"
     return
   end
 
-  local joinedRoomCode = _extractJsonString(body, "roomCode")
-  local wsUrl = _extractJsonString(body, "wsUrl")
-
-  if joinedRoomCode == "" or wsUrl == "" then
-    self._statusText = "참가 실패: wsUrl/roomCode 누락"
+  if normalized.roomCode == "" or normalized.wsUrl == "" or normalized.token == "" then
+    self._statusText = "참가 실패: wsUrl/roomCode/token 누락"
     return
   end
 
   love.keyboard.setTextInput(false)
   SceneManager:change("WaitingRoomScene", {
     isHost = false,
-    roomCode = joinedRoomCode,
-    wsUrl = wsUrl,
+    roomCode = normalized.roomCode,
+    token = normalized.token,
+    wsUrl = normalized.wsUrl,
   })
 end
 

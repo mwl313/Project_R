@@ -1,11 +1,12 @@
 --[[
-파일명: net_manager.lua
+파일명: net/net_manager.lua
 모듈명: NetManager
 
 역할:
 - 서버(WebSocket) 연결/메시지 송수신 관리
 - roomState 캐싱
 - 이벤트 큐(events) 제공 (씬이 폴링하여 처리)
+- 서버 프로토콜이 다르더라도(hello/snapshot/chat vs room.*) 씬이 기대하는 이벤트로 변환
 
 외부에서 사용 가능한 함수:
 - NetManager.new()
@@ -13,7 +14,7 @@
 - NetManager:connect(params)
 - NetManager:disconnect()
 - NetManager:isConnected()
-- NetManager:send(type, payload)
+- NetManager:send(typeName, payload)
 - NetManager:getRoomState()
 - NetManager:getPlayerId()
 - NetManager:getRole()
@@ -23,6 +24,7 @@
 주의:
 - room.state는 캐시하고, 그 외 메시지는 이벤트 큐로 전달한다.
 - wsUrl(상대경로)이 내려오면 Config.SERVER_WS_BASE가 필요하다.
+- 호환 목적상 connect 직후 hello + room.join을 모두 전송한다.
 ]]
 local WsClient = require("net/ws_client")
 local Utils = require("utils")
@@ -73,6 +75,104 @@ local function _buildWsUrl(params)
   return url
 end
 
+local function _normalizeOutboundType(typeName)
+  if typeName == "chat.send" then
+    return "chat"
+  end
+
+  if typeName == "room.join" then
+    return "hello"
+  end
+
+  return typeName
+end
+
+local function _wrapOutboundPayload(typeName, payload, nickname)
+  local p = payload or {}
+
+  if typeName == "hello" then
+    if p.nickname == nil then
+      p.nickname = nickname or "플레이어1"
+    end
+    return p
+  end
+
+  if typeName == "chat" then
+    if p.text == nil and payload and payload.text ~= nil then
+      p.text = payload.text
+    end
+    return p
+  end
+
+  return p
+end
+
+local function _toSceneEventType(serverType)
+  if serverType == "hello_ok" then
+    return "room.joined"
+  end
+
+  if serverType == "snapshot" then
+    return "room.state"
+  end
+
+  if serverType == "chat" then
+    return "chat.message"
+  end
+
+  if serverType == "chat_denied" then
+    return "chat.denied"
+  end
+
+  if serverType == "room_closed" then
+    return "room.closed"
+  end
+
+  if serverType == "left" then
+    return "room.left"
+  end
+
+  if serverType == "turn_order" or serverType == "match.turnOrder" then
+    return "match.turnOrder"
+  end
+
+  return serverType
+end
+
+local function _normalizeInboundPayload(serverType, payload)
+  local p = payload or {}
+
+  if serverType == "hello_ok" then
+    return {
+      playerId = p.playerId or p.id or "",
+      role = p.role or "",
+      roomCode = p.roomCode or p.code or "",
+      nickname = p.nickname or "",
+    }
+  end
+
+  if serverType == "snapshot" then
+    -- 서버 구현에 따라 payload가 {hostPlayerId, guestPlayerId, phase} 형태일 수도 있고,
+    -- 더 깊은 구조일 수도 있다. 씬이 기대하는 키는 최대한 그대로 유지한다.
+    return p
+  end
+
+  if serverType == "chat" then
+    return {
+      nickname = p.nickname or p.from or "플레이어",
+      text = p.text or "",
+    }
+  end
+
+  if serverType == "chat_denied" then
+    return {
+      reason = p.reason or "denied",
+    }
+  end
+
+  return p
+end
+
 function NetManager.new()
   local self = setmetatable({}, NetManager)
 
@@ -84,6 +184,8 @@ function NetManager.new()
   self._role = ""
 
   self._roomState = nil
+
+  self._nickname = "플레이어1"
 
   self._inbox = {}
   self._events = {}
@@ -109,7 +211,8 @@ function NetManager:update(dt)
 end
 
 function NetManager:connect(params)
-  local nickname = params.nickname or "플레이어1"
+  local nickname = params and params.nickname or "플레이어1"
+  self._nickname = nickname
 
   self:disconnect()
 
@@ -123,7 +226,10 @@ function NetManager:connect(params)
     url = url,
     onOpen = function()
       self._isConnected = true
-      self:send("room.join", { nickname = nickname })
+
+      -- 호환 목적: 서버가 hello 기반이든 room.join 기반이든 붙도록 둘 다 보낸다.
+      self:send("hello", { nickname = self._nickname })
+      self:send("room.join", { nickname = self._nickname })
     end,
     onMessage = function(text)
       table.insert(self._inbox, text)
@@ -167,9 +273,12 @@ function NetManager:send(typeName, payload)
     return false
   end
 
+  local normalizedType = _normalizeOutboundType(typeName)
+  local normalizedPayload = _wrapOutboundPayload(normalizedType, payload, self._nickname)
+
   local msg = {
-    type = typeName,
-    payload = payload or {},
+    type = normalizedType,
+    payload = normalizedPayload,
   }
 
   self._ws:sendJson(msg)
@@ -207,30 +316,55 @@ function NetManager:_handleRawMessage(text)
     return
   end
 
-  if msg.type == "room.hello" then
-    if msg.payload and msg.payload.roomCode then
-      self._roomCode = msg.payload.roomCode
+  local sceneType = _toSceneEventType(msg.type)
+  local payload = _normalizeInboundPayload(msg.type, msg.payload)
+
+  if sceneType == "room.joined" then
+    self._playerId = payload.playerId or ""
+    self._role = payload.role or ""
+    if payload.roomCode and payload.roomCode ~= "" then
+      self._roomCode = payload.roomCode
     end
+
+    table.insert(self._events, { type = "room.joined", payload = payload })
     return
   end
 
-  if msg.type == "room.joined" then
-    self._playerId = msg.payload.playerId or ""
-    self._role = msg.payload.role or ""
-    self._roomCode = msg.payload.roomCode or self._roomCode
-    table.insert(self._events, msg)
-    return
-  end
-
-  if msg.type == "room.state" then
-    self._roomState = msg.payload
-    if msg.payload and msg.payload.roomCode then
-      self._roomCode = msg.payload.roomCode
+  if sceneType == "room.state" then
+    self._roomState = payload
+    if payload and payload.roomCode and payload.roomCode ~= "" then
+      self._roomCode = payload.roomCode
     end
+    table.insert(self._events, { type = "room.state", payload = payload })
     return
   end
 
-  table.insert(self._events, msg)
+  if sceneType == "chat.message" then
+    table.insert(self._events, { type = "chat.message", payload = payload })
+    return
+  end
+
+  if sceneType == "chat.denied" then
+    table.insert(self._events, { type = "chat.denied", payload = payload })
+    return
+  end
+
+  if sceneType == "room.closed" then
+    table.insert(self._events, { type = "room.closed", payload = payload })
+    return
+  end
+
+  if sceneType == "room.left" then
+    table.insert(self._events, { type = "room.left", payload = payload })
+    return
+  end
+
+  if sceneType == "match.turnOrder" then
+    table.insert(self._events, { type = "match.turnOrder", payload = payload })
+    return
+  end
+
+  table.insert(self._events, { type = tostring(sceneType), payload = payload })
 end
 
 return NetManager
