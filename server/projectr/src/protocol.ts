@@ -1,57 +1,52 @@
 /**
- * 파일명: protocol.ts
- * 모듈명: Protocol
+ * File: protocol.ts
+ * Module: Protocol
  *
- * 역할:
- * - 클라이언트 ↔ 서버 간 메시지 타입 정의
- * - JSON 파싱 및 최소 검증
+ * Responsibilities:
+ * - Defines client<->server message shapes for WebSocket
+ * - Keeps protocol stable and explicit (no magic strings in logic)
  *
- * 외부에서 사용 가능한 함수:
- * - parseClientMessage(text)
- * - buildServerEvent(type, payload)
- *
- * 주의:
- * - 이 단계에서는 "가벼운 검증"만 수행한다.
+ * Public exports:
+ * - ClientToServerMessage, ServerToClientMessage unions
+ * - Helper types for room snapshots
  */
 
-export type ClientMessage =
-  | { type: "room.join"; payload: { playerId: string; nickname: string } }
-  | { type: "chat.send"; payload: { text: string } }
-  | { type: "placement.submit"; payload: { stones: Array<{ x: number; y: number }> } }
-  | { type: "ability.pick"; payload: { chosen: string[] } }
-  | { type: "game.fire"; payload: { stoneId: string; dx: number; dy: number; power: number } }
-  | { type: "game.snapshot"; payload: { turnId: number; snapshot: unknown } }
-  | { type: "game.resign"; payload: Record<string, never> };
+import { EndReason, RoomPhase } from "./rules";
 
-export type ServerEvent = {
-  type: string;
-  payload?: unknown;
-};
+export type PlayerSide = "p1" | "p2";
 
-export function buildServerEvent(type: string, payload?: unknown): ServerEvent {
-  return { type, payload };
+export interface PlayerPublic {
+  side: PlayerSide;
+  nickname: string;
+  isHost: boolean;
+  isConnected: boolean;
 }
 
-export function parseClientMessage(text: string): ClientMessage | null {
-  if (!text) {
-    return null;
-  }
-
-  let obj: unknown;
-  try {
-    obj = JSON.parse(text);
-  } catch {
-    return null;
-  }
-
-  if (!obj || typeof obj !== "object") {
-    return null;
-  }
-
-  const msg = obj as { type?: unknown };
-  if (typeof msg.type !== "string") {
-    return null;
-  }
-
-  return obj as ClientMessage;
+export interface RoomSnapshot {
+  roomCode: string;
+  phase: RoomPhase;
+  players: PlayerPublic[];
+  serverTimeMs: number;
+  result?: {
+    winnerSide?: PlayerSide;
+    reason: EndReason;
+  };
 }
+
+export type ClientToServerMessage =
+  | { type: "hello"; token: string; nickname?: string }
+  | { type: "chat"; text: string }
+  | { type: "start_game" }
+  | { type: "leave_room" }
+  // placeholders for next steps (Phase 3-2/3-3/3-4/playing)
+  | { type: "submit_placement"; placements: unknown }
+  | { type: "confirm_reveal_ack" }
+  | { type: "submit_card_select"; selected: unknown }
+  | { type: "submit_turn"; turn: unknown };
+
+export type ServerToClientMessage =
+  | { type: "hello_ok"; snapshot: RoomSnapshot; yourSide: PlayerSide; yourToken: string }
+  | { type: "snapshot"; snapshot: RoomSnapshot }
+  | { type: "chat"; fromSide: PlayerSide | "system"; text: string; serverTimeMs: number }
+  | { type: "error"; code: string; message: string }
+  | { type: "room_closed"; reason: EndReason; message: string };

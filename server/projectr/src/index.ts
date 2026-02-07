@@ -1,104 +1,139 @@
 /**
- * 파일명: index.ts
- * 모듈명: WorkerEntry
+ * File: index.ts
+ * Module: WorkerEntrypoint
  *
- * 역할:
- * - Cloudflare Worker 엔트리
- * - /room/create: 방 코드 생성(서버 생성 → 클라 전달)
- * - /ws?room=CODE: Durable Object(RoomDO)로 라우팅
- * - RoomDO export (wrangler.jsonc의 class_name과 반드시 일치)
+ * Responsibilities:
+ * - HTTP routing (create/join/health)
+ * - WebSocket upgrade routing to Durable Object instance
+ * - Room code generation (server-generated, sent to client)
  *
- * 외부에서 사용 가능한 항목:
- * - default fetch handler
- * - RoomDO
- *
- * 주의:
- * - DO 클래스 export 누락 시 배포 후 DO 동작이 실패할 수 있다.
+ * Endpoints:
+ * - GET  /health
+ * - POST /room/create   -> { roomCode, token, wsUrl }
+ * - POST /room/join     -> { roomCode, token, wsUrl }
+ * - GET  /ws?code=XXXXX&token=YYYY  (WS upgrade, forwarded to DO)
  */
 
 import { RoomDO } from "./room_do";
+import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, isValidRoomCode, normalizeRoomCode } from "./rules";
 
-type Env = {
-  ROOM: DurableObjectNamespace;
-};
-
-export { RoomDO };
-
-function _notFound(): Response {
-  return new Response("not found", { status: 404 });
+export interface Env {
+  ROOM: DurableObjectNamespace<RoomDO>;
 }
 
-function _badRequest(message: string): Response {
-  return new Response(message, { status: 400 });
-}
-
-function _json(data: unknown, status: number = 200): Response {
+function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    },
+    headers: { "Content-Type": "application/json; charset=utf-8" },
   });
 }
 
-function _randomRoomCode(length: number): string {
-  // 혼동 방지용 문자(0/O, 1/I 제거)
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const bytes = new Uint8Array(length);
-  crypto.getRandomValues(bytes);
+function randomToken(): string {
+  const buf = new Uint8Array(16);
+  crypto.getRandomValues(buf);
+  return Array.from(buf).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function randomRoomCode(): string {
+  const buf = new Uint8Array(ROOM_CODE_LENGTH);
+  crypto.getRandomValues(buf);
 
   let code = "";
-  for (let i = 0; i < length; i += 1) {
-    const idx = bytes[i] % alphabet.length;
-    code += alphabet[idx];
+  for (let i = 0; i < ROOM_CODE_LENGTH; i++) {
+    const idx = buf[i] % ROOM_CODE_ALPHABET.length;
+    code += ROOM_CODE_ALPHABET[idx];
   }
   return code;
 }
 
-async function _createRoomCode(env: Env): Promise<string> {
-  // 충돌 확률은 낮지만, 그래도 몇 번 재시도
-  for (let i = 0; i < 5; i += 1) {
-    const code = _randomRoomCode(5);
-    // DO idFromName은 동일 name이면 동일 id가 나오므로, “존재 여부 체크”는 애매하지만
-    // 여기서는 코드 충돌 자체를 최소화하기 위해 랜덤 재시도만 수행한다.
-    // (실제 충돌 시 같은 코드 방으로 합류하는 형태가 되며, 이는 UX상 큰 문제는 아니다)
-    const _ = env.ROOM.idFromName(code);
-    return code;
-  }
-
-  // 극단 케이스 fallback
-  return _randomRoomCode(6);
+function isWsUpgrade(request: Request): boolean {
+  const upgrade = request.headers.get("Upgrade");
+  return upgrade !== null && upgrade.toLowerCase() === "websocket";
 }
+
+export { RoomDO };
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname === "/health") {
-      return new Response("ok");
+    if (request.method === "GET" && url.pathname === "/health") {
+      return json({ ok: true });
     }
 
-    if (url.pathname === "/room/create") {
-      if (request.method !== "POST") {
-        return _badRequest("method_not_allowed");
+    if (request.method === "POST" && url.pathname === "/room/create") {
+      // Create: generate roomCode and token
+      // Note: collisions are extremely unlikely; if you want strict uniqueness, loop + check can be added later.
+      const roomCode = randomRoomCode();
+      const token = randomToken();
+
+      const id = env.ROOM.idFromName(roomCode);
+      const stub = env.ROOM.get(id);
+
+      // initialize DO storage
+      await stub.fetch("https://do/do/init", {
+        method: "POST",
+        body: JSON.stringify({ roomCode }),
+        headers: { "Content-Type": "application/json" },
+      });
+
+      // pre-join so DO registers p1/host
+      await stub.fetch("https://do/do/join", {
+        method: "POST",
+        body: JSON.stringify({ roomCode, token, nickname: "" }),
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const wsUrl = `/ws?code=${encodeURIComponent(roomCode)}&token=${encodeURIComponent(token)}`;
+      return json({ ok: true, roomCode, token, wsUrl });
+    }
+
+    if (request.method === "POST" && url.pathname === "/room/join") {
+      const payload = (await request.json().catch(() => null)) as any;
+      const codeRaw = typeof payload?.roomCode === "string" ? payload.roomCode : "";
+      const nickname = typeof payload?.nickname === "string" ? payload.nickname : "";
+
+      const roomCode = normalizeRoomCode(codeRaw);
+      if (!isValidRoomCode(roomCode)) {
+        return json({ ok: false, error: "invalid_room_code" }, 400);
       }
 
-      const roomCode = await _createRoomCode(env);
-      return _json({ roomCode });
+      const token = randomToken();
+
+      const id = env.ROOM.idFromName(roomCode);
+      const stub = env.ROOM.get(id);
+
+      const joinRes = await stub.fetch("https://do/do/join", {
+        method: "POST",
+        body: JSON.stringify({ roomCode, token, nickname }),
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (!joinRes.ok) {
+        const body = await joinRes.text();
+        return new Response(body, { status: joinRes.status });
+      }
+
+      const wsUrl = `/ws?code=${encodeURIComponent(roomCode)}&token=${encodeURIComponent(token)}`;
+      return json({ ok: true, roomCode, token, wsUrl });
     }
 
-    if (url.pathname === "/ws") {
-      const roomCode = url.searchParams.get("room") || "";
-      if (!roomCode) {
-        return _badRequest("missing_room");
+    if (request.method === "GET" && url.pathname === "/ws" && isWsUpgrade(request)) {
+      // Forward WS upgrade to DO (per room code)
+      const codeRaw = url.searchParams.get("code") || "";
+      const token = url.searchParams.get("token") || "";
+      const roomCode = normalizeRoomCode(codeRaw);
+
+      if (!token || !isValidRoomCode(roomCode)) {
+        return new Response("bad ws params", { status: 400 });
       }
 
       const id = env.ROOM.idFromName(roomCode);
       const stub = env.ROOM.get(id);
+
       return stub.fetch(request);
     }
 
-    return _notFound();
+    return new Response("Not Found", { status: 404 });
   },
 };

@@ -5,32 +5,32 @@
 역할:
 - 씬/오버레이를 묶어 업데이트/렌더/입력 라우팅
 - SettingsManager 로드/저장/적용 관리
-- NetClient(WS) 업데이트 및 이벤트 큐 관리
-- 서버 기반 방 생성/참가 흐름 지원
+- RenderScale 적용(월드 좌표 1280x720 고정 + 스크린 스케일링)
+- Overlay 입력 우선 처리 후, SceneManager로 입력 전달
 
 외부에서 사용 가능한 함수:
 - App.new()
 - App:update(dt)
 - App:draw()
-- App:onKeyPressed(...)
+- App:onKeyPressed(key, scancode, isrepeat)
 - App:onTextInput(text)
 - App:onTextEdited(text, start, length)
-- App:onMousePressed(...)
-- App:onMouseReleased(...)
+- App:onMousePressed(x, y, button, istouch, presses)
+- App:onMouseReleased(x, y, button, istouch, presses)
 - App:openNicknamePopup()
 - App:openSettingsPopup()
 - App:closeOverlay()
 - App:getSettingsManager()
-- App:getNetClient()
-- App:pollNetEvent()
 
 주의:
 - Overlay 입력 우선 처리
+- 마우스 좌표는 스크린->월드 변환 후 사용(해상도 무관)
+- draw는 RenderScale.begin/endDraw 내부에서만 월드 좌표로 렌더
 ]]
 local OverlayManager = require("overlay_manager")
-local Utils = require("utils")
+local RenderScale = require("render_scale")
 local SettingsManager = require("settings_manager")
-local NetClient = require("net_client")
+local Utils = require("utils")
 
 local App = {}
 App.__index = App
@@ -40,37 +40,38 @@ function App.new()
 
   self._overlayManager = OverlayManager.new()
   self._settingsManager = SettingsManager.new()
-  self._netClient = NetClient.new()
+  self._renderScale = RenderScale.new()
 
-  self._mouseX = 0
-  self._mouseY = 0
+  self._mouseScreenX = 0
+  self._mouseScreenY = 0
+  self._mouseWorldX = 0
+  self._mouseWorldY = 0
 
   self._settingsManager:load()
   self._settingsManager:applyDisplay()
   self._settingsManager:applyAudio()
   self._settingsManager:applyInput()
 
-  -- playerId는 load 과정에서 없으면 생성되며, 여기서 확정적으로 확보
-  self._settingsManager:getPlayerId()
-
   return self
 end
 
 function App:update(dt)
-  self._mouseX, self._mouseY = love.mouse.getPosition()
+  self._mouseScreenX, self._mouseScreenY = love.mouse.getPosition()
+  self._mouseWorldX, self._mouseWorldY = self._renderScale:toWorld(self._mouseScreenX, self._mouseScreenY)
 
   self._overlayManager:update(dt)
-
-  self._netClient:update(dt)
-
   SceneManager:update(dt)
 end
 
 function App:draw()
-  SceneManager:draw()
+  -- 월드 좌표(1280x720)로 통일된 렌더링 파이프라인
+  self._renderScale:begin()
 
+  SceneManager:draw()
   self:_drawSettingsButtonIfAllowed()
   self._overlayManager:draw()
+
+  self._renderScale:endDraw()
 end
 
 function App:onKeyPressed(key, scancode, isrepeat)
@@ -107,31 +108,35 @@ function App:onTextEdited(text, start, length)
 end
 
 function App:onMousePressed(x, y, button, istouch, presses)
+  local worldX, worldY = self._renderScale:toWorld(x, y)
+
   if self._overlayManager:isOpen() then
-    local isHandled = self._overlayManager:onMousePressed(x, y, button, istouch, presses)
+    local isHandled = self._overlayManager:onMousePressed(worldX, worldY, button, istouch, presses)
     if isHandled then
       return true
     end
   end
 
   if self:_isSettingsAllowedInCurrentScene() then
-    if self:_handleSettingsButtonClick(x, y, button) then
+    if self:_handleSettingsButtonClick(worldX, worldY, button) then
       return true
     end
   end
 
-  return SceneManager:onMousePressed(x, y, button, istouch, presses)
+  return SceneManager:onMousePressed(worldX, worldY, button, istouch, presses)
 end
 
 function App:onMouseReleased(x, y, button, istouch, presses)
+  local worldX, worldY = self._renderScale:toWorld(x, y)
+
   if self._overlayManager:isOpen() then
-    local isHandled = self._overlayManager:onMouseReleased(x, y, button, istouch, presses)
+    local isHandled = self._overlayManager:onMouseReleased(worldX, worldY, button, istouch, presses)
     if isHandled then
       return true
     end
   end
 
-  return SceneManager:onMouseReleased(x, y, button, istouch, presses)
+  return SceneManager:onMouseReleased(worldX, worldY, button, istouch, presses)
 end
 
 function App:openNicknamePopup()
@@ -151,21 +156,13 @@ function App:getSettingsManager()
   return self._settingsManager
 end
 
-function App:getNetClient()
-  return self._netClient
-end
-
-function App:pollNetEvent()
-  return self._netClient:poll()
-end
-
 function App:_isSettingsAllowedInCurrentScene()
   local currentName = self:_getCurrentSceneName()
   return currentName == "LobbyScene" or currentName == "WaitingRoomScene" or currentName == "MatchScene"
 end
 
 function App:_getCurrentSceneName()
-  local currentScene = SceneManager._current
+  local currentScene = SceneManager:getCurrent()
   if not currentScene then
     return ""
   end
@@ -185,7 +182,7 @@ function App:_drawSettingsButtonIfAllowed()
     h = Config.SETTINGS_BUTTON_H,
   }
 
-  local isHovered = Utils.isPointInRect(self._mouseX, self._mouseY, rect.x, rect.y, rect.w, rect.h)
+  local isHovered = Utils.isPointInRect(self._mouseWorldX, self._mouseWorldY, rect.x, rect.y, rect.w, rect.h)
   Utils.drawButton(rect, "환경설정", isHovered)
 end
 
