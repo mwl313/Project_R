@@ -5,7 +5,7 @@
 역할:
 - 방 코드 입력 UI
 - 서버 HTTP(/room/join)로 참가 처리
-- 성공 시 WaitingRoomScene으로 이동
+- 성공 시 WaitingRoomScene으로 이동(게스트, wsUrl 포함)
 
 외부에서 사용 가능한 함수:
 - RoomSearchScene.new(params)
@@ -16,8 +16,8 @@
 - RoomSearchScene:onTextInput(text)
 
 주의:
+- 서버 응답은 문자열(JSON) 또는 테이블일 수 있으므로 둘 다 안전하게 처리한다.
 - 이 씬은 “방 참가”에만 집중한다. (로비 UI는 유지)
-- HttpClient.postJson 구현에 따라 table 또는 string(JSON)을 반환할 수 있으므로 양쪽을 모두 처리한다.
 ]]
 local Utils = require("utils")
 local HttpClient = require("http_client")
@@ -32,52 +32,40 @@ local function _trim(text)
   return (string.match(text, "^%s*(.-)%s*$") or "")
 end
 
-local function _extractJsonString(raw, key)
-  if type(raw) ~= "string" then
+local function _asString(v)
+  if v == nil then
     return ""
   end
+  if type(v) == "string" then
+    return v
+  end
+  return tostring(v)
+end
+
+local function _extractFieldAsString(resp, key)
+  if resp == nil then
+    return ""
+  end
+
+  if type(resp) == "table" then
+    return _asString(resp[key])
+  end
+
+  local raw = _asString(resp)
   return string.match(raw, "\"" .. key .. "\"%s*:%s*\"([^\"]*)\"") or ""
 end
 
-local function _extractJsonBool(raw, key)
-  if type(raw) ~= "string" then
+local function _extractFieldAsBool(resp, key)
+  if resp == nil then
     return false
   end
 
-  local s = string.match(raw, "\"" .. key .. "\"%s*:%s*(true|false)")
-  return s == "true"
-end
-
-local function _normalizeJoinResponse(body)
-  if type(body) == "table" then
-    return {
-      ok = body.ok == true,
-      roomCode = tostring(body.roomCode or ""),
-      token = tostring(body.token or ""),
-      wsUrl = tostring(body.wsUrl or ""),
-    }
+  if type(resp) == "table" then
+    return resp[key] == true
   end
 
-  if type(body) == "string" then
-    local ok = _extractJsonBool(body, "ok")
-    local roomCode = _extractJsonString(body, "roomCode")
-    local token = _extractJsonString(body, "token")
-    local wsUrl = _extractJsonString(body, "wsUrl")
-
-    return {
-      ok = ok,
-      roomCode = tostring(roomCode or ""),
-      token = tostring(token or ""),
-      wsUrl = tostring(wsUrl or ""),
-    }
-  end
-
-  return {
-    ok = false,
-    roomCode = "",
-    token = "",
-    wsUrl = "",
-  }
+  local raw = _asString(resp)
+  return string.match(raw, "\"" .. key .. "\"%s*:%s*true") ~= nil
 end
 
 function RoomSearchScene.new(_params)
@@ -215,29 +203,36 @@ function RoomSearchScene:_tryJoin()
   local url = Config.SERVER_HTTP_BASE .. "/room/join"
   local nickname = App:getSettingsManager():getNickname()
 
-  local body, err = HttpClient.postJson(url, { roomCode = roomCode, nickname = nickname })
-  if not body then
+  local resp, err = HttpClient.postJson(url, { roomCode = roomCode, nickname = nickname })
+  if not resp then
     self._statusText = "참가 실패: " .. tostring(err)
     return
   end
 
-  local normalized = _normalizeJoinResponse(body)
-  if not normalized.ok then
-    self._statusText = "참가 실패: 서버 응답 오류"
+  local ok = _extractFieldAsBool(resp, "ok")
+  if not ok then
+    local errorCode = _extractFieldAsString(resp, "error")
+    if errorCode ~= "" then
+      self._statusText = "참가 실패: " .. errorCode
+    else
+      self._statusText = "참가 실패: 서버 응답 오류"
+    end
     return
   end
 
-  if normalized.roomCode == "" or normalized.wsUrl == "" or normalized.token == "" then
-    self._statusText = "참가 실패: wsUrl/roomCode/token 누락"
+  local joinedRoomCode = _extractFieldAsString(resp, "roomCode")
+  local wsUrl = _extractFieldAsString(resp, "wsUrl")
+
+  if joinedRoomCode == "" or wsUrl == "" then
+    self._statusText = "참가 실패: wsUrl/roomCode 누락"
     return
   end
 
   love.keyboard.setTextInput(false)
   SceneManager:change("WaitingRoomScene", {
     isHost = false,
-    roomCode = normalized.roomCode,
-    token = normalized.token,
-    wsUrl = normalized.wsUrl,
+    roomCode = joinedRoomCode,
+    wsUrl = wsUrl,
   })
 end
 
