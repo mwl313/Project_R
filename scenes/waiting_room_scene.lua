@@ -4,7 +4,7 @@
 
 역할:
 - 대기방 UI(방장/게스트 공용)
-- 서버 WebSocket 연결 및 room.join 전송
+- 서버 WebSocket 연결 및 room.join 전송(NetManager 내부에서 처리)
 - room.state / room.joined / room.left / room.closed 수신 처리
 - 채팅 송수신(스팸 제한은 서버 룰)
 
@@ -24,33 +24,11 @@ local Utils = require("utils")
 local WaitingRoomScene = {}
 WaitingRoomScene.__index = WaitingRoomScene
 
-local function _decodeServerEvent(text)
-  if not text or text == "" then
-    return nil
+local function _trim(text)
+  if not text then
+    return ""
   end
-
-  local eventType = string.match(text, "\"type\"%s*:%s*\"([^\"]+)\"")
-  if not eventType then
-    return nil
-  end
-
-  -- payload는 이 단계에서는 간단히 raw로 보관(필요한 값만 패턴으로 추출)
-  return {
-    type = eventType,
-    raw = text,
-  }
-end
-
-local function _extractJsonString(raw, key)
-  return string.match(raw, "\"" .. key .. "\"%s*:%s*\"([^\"]*)\"")
-end
-
-local function _extractJsonNumber(raw, key)
-  local s = string.match(raw, "\"" .. key .. "\"%s*:%s*(%d+)")
-  if not s then
-    return nil
-  end
-  return tonumber(s)
+  return (string.match(text, "^%s*(.-)%s*$") or "")
 end
 
 function WaitingRoomScene.new(params)
@@ -60,6 +38,8 @@ function WaitingRoomScene.new(params)
 
   self._isHost = params and params.isHost or false
   self._roomCode = params and params.roomCode or ""
+  self._wsUrl = params and params.wsUrl or ""
+
   self._statusText = ""
   self._phaseText = "대기 중"
 
@@ -83,25 +63,44 @@ function WaitingRoomScene.new(params)
     table.insert(self._buttons, { key = "ready", label = "준비(추후)", x = 680, y = 230, w = 220, h = 56 })
   end
 
-  self:_connectIfNeeded()
+  self:_connect()
 
   return self
 end
 
 function WaitingRoomScene:update(_dt)
-  -- 네트워크 이벤트 폴링
-  while true do
-    local ev = App:pollNetEvent()
-    if not ev then
-      break
-    end
+  local net = App:getNetManager()
+  local events = net:popEvents()
 
-    if ev.type == "net.connected" then
-      self:_sendJoin()
-    elseif ev.type == "net.disconnected" then
+  for _, ev in ipairs(events) do
+    if ev.type == "net.closed" then
       self._statusText = "연결이 종료되었습니다."
-    elseif ev.type == "net.message" then
-      self:_handleServerMessage(ev.payload.text)
+    elseif ev.type == "net.error" then
+      self._statusText = "연결 오류가 발생했습니다."
+    elseif ev.type == "room.joined" then
+      local nickname = (ev.payload and ev.payload.nickname) or "플레이어"
+      local role = (ev.payload and ev.payload.role) or ""
+      self:_appendChatSystem(nickname .. "님이 입장했습니다. (" .. role .. ")")
+    elseif ev.type == "room.state" then
+      if ev.payload then
+        self._hostPlayerId = ev.payload.hostPlayerId or self._hostPlayerId
+        self._guestPlayerId = ev.payload.guestPlayerId or self._guestPlayerId
+        self._phaseText = ev.payload.phase or self._phaseText
+      end
+    elseif ev.type == "room.left" then
+      self:_appendChatSystem("상대가 퇴장했습니다.")
+    elseif ev.type == "room.closed" then
+      self:_appendChatSystem("방이 종료되었습니다. (방장 이탈)")
+      self:_disconnectAndGoLobby()
+    elseif ev.type == "chat.message" then
+      local nickname = (ev.payload and ev.payload.nickname) or "플레이어"
+      local text = (ev.payload and ev.payload.text) or ""
+      self:_appendChatMessage(nickname .. ": " .. text)
+    elseif ev.type == "chat.denied" then
+      local reason = (ev.payload and ev.payload.reason) or "denied"
+      self:_appendChatSystem("채팅 전송이 제한되었습니다: " .. reason)
+    elseif ev.type == "match.turnOrder" then
+      self:_appendChatSystem("매치가 시작되었습니다. (턴오더 수신)")
     end
   end
 end
@@ -151,7 +150,6 @@ function WaitingRoomScene:onTextInput(text)
     return false
   end
 
-  -- 채팅은 한글 포함 허용
   self._chatInput = self._chatInput .. tostring(text or "")
   if #self._chatInput > 120 then
     self._chatInput = string.sub(self._chatInput, 1, 120)
@@ -182,7 +180,7 @@ function WaitingRoomScene:onKeyPressed(key, _scancode, _isrepeat)
   end
 
   if key == "escape" then
-    SceneManager:change("LobbyScene")
+    self:_disconnectAndGoLobby()
     return true
   end
 
@@ -222,110 +220,35 @@ function WaitingRoomScene:onMousePressed(x, y, button, _istouch, _presses)
   return false
 end
 
-function WaitingRoomScene:_connectIfNeeded()
-  local wsBase = Config.SERVER_WS_BASE
-  local wsUrl = wsBase .. "/ws?room=" .. tostring(self._roomCode)
+function WaitingRoomScene:_connect()
+  local nickname = App:getSettingsManager():getNickname()
+  local net = App:getNetManager()
 
-  local netClient = App:getNetClient()
-  if netClient:isConnected() then
-    -- 이미 연결된 상태면 그대로 사용 (단, 다른 방이면 다음 단계에서 방 전환 처리 필요)
-    return
+  if net:isConnected() then
+    net:disconnect()
   end
 
-  local ok = netClient:connect(wsUrl)
+  local ok = net:connect({
+    wsUrl = self._wsUrl,
+    roomCode = self._roomCode,
+    nickname = nickname,
+  })
+
   if not ok then
-    self._statusText = "서버 연결 실패: " .. netClient:getLastError()
+    self._statusText = "서버 연결 실패(WS URL 오류)"
   else
     self._statusText = ""
   end
 end
 
-function WaitingRoomScene:_sendJoin()
-  local settings = App:getSettingsManager()
-  local netClient = App:getNetClient()
-
-  local msg = {
-    type = "room.join",
-    payload = {
-      playerId = settings:getPlayerId(),
-      nickname = settings:getNickname(),
-    },
-  }
-
-  netClient:sendJson(msg)
-end
-
 function WaitingRoomScene:_sendChat()
-  local text = tostring(self._chatInput or "")
-  text = string.gsub(text, "^%s+", "")
-  text = string.gsub(text, "%s+$", "")
-
+  local text = _trim(self._chatInput)
   if text == "" then
     return
   end
 
-  local netClient = App:getNetClient()
-  netClient:sendJson({
-    type = "chat.send",
-    payload = { text = text },
-  })
-
+  App:getNetManager():send("chat.send", { text = text })
   self._chatInput = ""
-end
-
-function WaitingRoomScene:_handleServerMessage(text)
-  local ev = _decodeServerEvent(text)
-  if not ev then
-    return
-  end
-
-  if ev.type == "room.state" then
-    self._hostPlayerId = _extractJsonString(ev.raw, "hostPlayerId") or self._hostPlayerId
-    self._guestPlayerId = _extractJsonString(ev.raw, "guestPlayerId") or self._guestPlayerId
-
-    local phase = _extractJsonString(ev.raw, "phase")
-    if phase and phase ~= "" then
-      self._phaseText = phase
-    end
-
-    return
-  end
-
-  if ev.type == "room.joined" then
-    local nickname = _extractJsonString(ev.raw, "nickname") or "플레이어"
-    local role = _extractJsonString(ev.raw, "role") or ""
-    self:_appendChatSystem(nickname .. "님이 입장했습니다. (" .. role .. ")")
-    return
-  end
-
-  if ev.type == "room.left" then
-    self:_appendChatSystem("상대가 퇴장했습니다.")
-    return
-  end
-
-  if ev.type == "room.closed" then
-    self:_appendChatSystem("방이 종료되었습니다. (방장 이탈)")
-    self:_disconnectAndGoLobby()
-    return
-  end
-
-  if ev.type == "chat.message" then
-    local nickname = _extractJsonString(ev.raw, "nickname") or "플레이어"
-    local msgText = _extractJsonString(ev.raw, "text") or ""
-    self:_appendChatMessage(nickname .. ": " .. msgText)
-    return
-  end
-
-  if ev.type == "chat.denied" then
-    local reason = _extractJsonString(ev.raw, "reason") or "denied"
-    self:_appendChatSystem("채팅 전송이 제한되었습니다: " .. reason)
-    return
-  end
-
-  if ev.type == "match.turnOrder" then
-    self:_appendChatSystem("매치가 시작되었습니다. (턴오더 수신)")
-    return
-  end
 end
 
 function WaitingRoomScene:_appendChatMessage(text)
@@ -343,7 +266,7 @@ function WaitingRoomScene:_disconnectAndGoLobby()
   love.keyboard.setTextInput(false)
   self._isChatEditing = false
 
-  App:getNetClient():disconnect()
+  App:getNetManager():disconnect()
   SceneManager:change("LobbyScene")
 end
 

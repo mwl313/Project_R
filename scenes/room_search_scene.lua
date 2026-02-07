@@ -3,23 +3,23 @@
 모듈명: RoomSearchScene
 
 역할:
-- 방 코드 입력(IME 포함) UI 제공
-- 엔터/버튼 클릭으로 방 참가 시도 트리거
+- 방 코드 입력 UI
+- 서버 HTTP(/room/join)로 참가 처리
+- 성공 시 WaitingRoomScene으로 이동
 
 외부에서 사용 가능한 함수:
 - RoomSearchScene.new(params)
 - RoomSearchScene:update(dt)
 - RoomSearchScene:draw()
-- RoomSearchScene:onKeyPressed(key, scancode, isrepeat)
+- RoomSearchScene:onMousePressed(...)
+- RoomSearchScene:onKeyPressed(...)
 - RoomSearchScene:onTextInput(text)
-- RoomSearchScene:onTextEdited(text, start, length)
-- RoomSearchScene:onMousePressed(x, y, button, istouch, presses)
 
 주의:
-- 이 씬은 "입력 안정성"에 초점을 둔다(서버 연동은 1곳만 연결하면 됨)
-- _로 시작하는 필드/함수는 내부 전용
+- 이 씬은 “방 참가”에만 집중한다. (로비 UI는 유지)
 ]]
 local Utils = require("utils")
+local HttpClient = require("http_client")
 
 local RoomSearchScene = {}
 RoomSearchScene.__index = RoomSearchScene
@@ -31,266 +31,174 @@ local function _trim(text)
   return (string.match(text, "^%s*(.-)%s*$") or "")
 end
 
-local function _clampCodeChar(ch)
-  -- 방 코드는 서버에서 생성(예: NQJ63)되므로: 영문/숫자만 허용(대문자화)
-  local byte = string.byte(ch)
-  if not byte then
+local function _extractJsonString(raw, key)
+  if not raw then
     return ""
   end
-
-  if byte >= 48 and byte <= 57 then
-    return ch
-  end
-
-  if byte >= 65 and byte <= 90 then
-    return ch
-  end
-
-  if byte >= 97 and byte <= 122 then
-    return string.upper(ch)
-  end
-
-  return ""
+  return string.match(raw, "\"" .. key .. "\"%s*:%s*\"([^\"]*)\"") or ""
 end
 
-local function _filterRoomCode(text)
-  if not text or text == "" then
-    return ""
-  end
-
-  local buffer = {}
-  for i = 1, #text do
-    local ch = string.sub(text, i, i)
-    local filtered = _clampCodeChar(ch)
-    if filtered ~= "" then
-      table.insert(buffer, filtered)
-    end
-  end
-
-  return table.concat(buffer)
-end
-
-function RoomSearchScene.new(params)
+function RoomSearchScene.new(_params)
   local self = setmetatable({}, RoomSearchScene)
 
   self.name = "RoomSearchScene"
 
-  self._mouseX = 0
-  self._mouseY = 0
-
-  self._titleY = 80
-  self._panelX = 0
-  self._panelY = 0
-  self._panelW = 560
-  self._panelH = 260
-
-  self._inputRect = { x = 0, y = 0, w = 420, h = 56 }
-  self._joinRect = { x = 0, y = 0, w = 180, h = 56 }
-  self._backRect = { x = 0, y = 0, w = 180, h = 56 }
+  self._statusText = ""
 
   self._roomCode = ""
-  self._imeText = ""
-  self._isFocused = true
+  self._isEditing = false
 
-  self._blinkSec = 0
-  self._isCaretOn = true
+  self._inputRect = { x = 260, y = 260, w = 360, h = 52 }
 
-  self._errorText = ""
-
-  self:_recalcLayout()
-
-  -- 텍스트 입력 시작(IME 포함)
-  love.keyboard.setTextInput(true)
+  self._buttons = {
+    { key = "join", label = "참가", x = 260, y = 330, w = 170, h = 56 },
+    { key = "back", label = "뒤로", x = 450, y = 330, w = 170, h = 56 },
+  }
 
   return self
 end
 
-function RoomSearchScene:update(dt)
-  self._mouseX, self._mouseY = love.mouse.getPosition()
-
-  self._blinkSec = self._blinkSec + dt
-  if self._blinkSec >= 0.5 then
-    self._blinkSec = 0
-    self._isCaretOn = not self._isCaretOn
-  end
+function RoomSearchScene:update(_dt)
 end
 
 function RoomSearchScene:draw()
-  self:_recalcLayout()
-
   love.graphics.setFont(Assets:getFont("title"))
-  love.graphics.printf("방 찾기", 0, self._titleY, Config.BASE_WIDTH, "center")
+  love.graphics.print("방 참가", 260, 170)
 
   love.graphics.setFont(Assets:getFont("default"))
+  love.graphics.print("방 코드를 입력하세요", 260, 220)
 
-  -- 패널
-  love.graphics.rectangle("line", self._panelX, self._panelY, self._panelW, self._panelH)
-
-  local hint = "방 코드를 입력하세요 (예: NQJ63)"
-  love.graphics.print(hint, self._panelX + 40, self._panelY + 46)
-
-  -- 입력 박스
   love.graphics.rectangle("line", self._inputRect.x, self._inputRect.y, self._inputRect.w, self._inputRect.h)
+  love.graphics.print(self._roomCode, self._inputRect.x + 12, self._inputRect.y + 14)
 
-  local displayText = self._roomCode
-  if self._imeText ~= "" then
-    displayText = self._roomCode .. self._imeText
+  if self._isEditing then
+    local caretX = self._inputRect.x + 12 + love.graphics.getFont():getWidth(self._roomCode)
+    love.graphics.line(caretX, self._inputRect.y + 10, caretX, self._inputRect.y + self._inputRect.h - 10)
   end
 
-  if displayText == "" then
-    love.graphics.print("코드 입력...", self._inputRect.x + 14, self._inputRect.y + 14)
-  else
-    love.graphics.print(displayText, self._inputRect.x + 14, self._inputRect.y + 14)
+  if self._statusText ~= "" then
+    love.graphics.print(self._statusText, 260, 410)
   end
 
-  -- 커서(캐럿)
-  if self._isFocused and self._isCaretOn then
-    local textW = love.graphics.getFont():getWidth(displayText)
-    local caretX = self._inputRect.x + 14 + textW + 2
-    local caretY1 = self._inputRect.y + 12
-    local caretY2 = self._inputRect.y + self._inputRect.h - 12
-    love.graphics.line(caretX, caretY1, caretX, caretY2)
-  end
-
-  -- 버튼
-  local isJoinHovered = Utils.isPointInRect(self._mouseX, self._mouseY, self._joinRect.x, self._joinRect.y, self._joinRect.w, self._joinRect.h)
-  Utils.drawButton(self._joinRect, "참가", isJoinHovered)
-
-  local isBackHovered = Utils.isPointInRect(self._mouseX, self._mouseY, self._backRect.x, self._backRect.y, self._backRect.w, self._backRect.h)
-  Utils.drawButton(self._backRect, "로비로", isBackHovered)
-
-  if self._errorText ~= "" then
-    love.graphics.print(self._errorText, self._panelX + 40, self._panelY + 210)
+  for _, btn in ipairs(self._buttons) do
+    local mx, my = love.mouse.getPosition()
+    local isHovered = Utils.isPointInRect(mx, my, btn.x, btn.y, btn.w, btn.h)
+    Utils.drawButton({ x = btn.x, y = btn.y, w = btn.w, h = btn.h }, btn.label, isHovered)
   end
 end
 
-function RoomSearchScene:onKeyPressed(key, scancode, isrepeat)
-  if key == "escape" then
-    love.keyboard.setTextInput(false)
-    SceneManager:change("LobbyScene")
+function RoomSearchScene:onTextInput(text)
+  if not self._isEditing then
+    return false
+  end
+
+  local t = tostring(text or "")
+  if t == "" then
     return true
   end
 
-  if key == "backspace" then
-    if self._imeText ~= "" then
-      -- 조합 중이면 삭제는 IME가 처리하므로 여기서는 유지
+  self._roomCode = self._roomCode .. t
+  if #self._roomCode > 12 then
+    self._roomCode = string.sub(self._roomCode, 1, 12)
+  end
+
+  return true
+end
+
+function RoomSearchScene:onKeyPressed(key, _scancode, _isrepeat)
+  if self._isEditing then
+    if key == "backspace" then
+      self._roomCode = string.sub(self._roomCode, 1, math.max(0, #self._roomCode - 1))
       return true
     end
 
-    local len = #self._roomCode
-    if len > 0 then
-      self._roomCode = string.sub(self._roomCode, 1, len - 1)
+    if key == "return" or key == "kpenter" then
+      self:_tryJoin()
+      return true
     end
-    return true
+
+    if key == "escape" then
+      self._isEditing = false
+      love.keyboard.setTextInput(false)
+      return true
+    end
+
+    return false
   end
 
-  if key == "return" or key == "kpenter" then
-    self:_tryJoin()
+  if key == "escape" then
+    SceneManager:change("LobbyScene")
     return true
   end
 
   return false
 end
 
-function RoomSearchScene:onTextInput(text)
-  if not self._isFocused then
-    return false
-  end
-
-  if self._imeText ~= "" then
-    -- IME 조합 중에는 textinput이 섞일 수 있어 안전하게 무시
-    return true
-  end
-
-  local filtered = _filterRoomCode(text)
-  if filtered ~= "" then
-    self._roomCode = _filterRoomCode(self._roomCode .. filtered)
-  end
-
-  return true
-end
-
-function RoomSearchScene:onTextEdited(text, start, length)
-  if not self._isFocused then
-    return false
-  end
-
-  -- IME 조합 문자열(미확정) 표시용
-  self._imeText = _filterRoomCode(text)
-  return true
-end
-
-function RoomSearchScene:onMousePressed(x, y, button, istouch, presses)
+function RoomSearchScene:onMousePressed(x, y, button, _istouch, _presses)
   if button ~= 1 then
     return false
   end
 
   if Utils.isPointInRect(x, y, self._inputRect.x, self._inputRect.y, self._inputRect.w, self._inputRect.h) then
-    self._isFocused = true
+    self._isEditing = true
     love.keyboard.setTextInput(true)
     return true
   end
 
-  self._isFocused = false
+  for _, btn in ipairs(self._buttons) do
+    if Utils.isPointInRect(x, y, btn.x, btn.y, btn.w, btn.h) then
+      if btn.key == "back" then
+        love.keyboard.setTextInput(false)
+        SceneManager:change("LobbyScene")
+        return true
+      end
 
-  if Utils.isPointInRect(x, y, self._joinRect.x, self._joinRect.y, self._joinRect.w, self._joinRect.h) then
-    self:_tryJoin()
-    return true
-  end
-
-  if Utils.isPointInRect(x, y, self._backRect.x, self._backRect.y, self._backRect.w, self._backRect.h) then
-    love.keyboard.setTextInput(false)
-    SceneManager:change("LobbyScene")
-    return true
+      if btn.key == "join" then
+        self:_tryJoin()
+        return true
+      end
+    end
   end
 
   return false
 end
 
 function RoomSearchScene:_tryJoin()
-  local code = _trim(self._roomCode)
-  code = _filterRoomCode(code)
-
-  if code == "" then
-    self._errorText = "방 코드를 입력해 주세요."
+  local roomCode = _trim(self._roomCode)
+  if roomCode == "" then
+    self._statusText = "방 코드를 입력해주세요."
     return
   end
 
-  if self._imeText ~= "" then
-    self._errorText = "한/영 조합이 끝난 뒤 참가해 주세요."
+  local url = Config.SERVER_HTTP_BASE .. "/room/join"
+  local nickname = App:getSettingsManager():getNickname()
+
+  local body, err = HttpClient.postJson(url, { roomCode = roomCode, nickname = nickname })
+  if not body then
+    self._statusText = "참가 실패: " .. tostring(err)
     return
   end
 
-  self._errorText = ""
-
-  -- ============================================
-  -- 여기 1줄만, 당신의 실제 “방 참가” 함수명으로 연결하면 됩니다.
-  -- 예시(권장): App:joinRoomByCode(code)
-  -- ============================================
-  if App.joinRoomByCode then
-    App:joinRoomByCode(code)
+  local ok = string.match(body, "\"ok\"%s*:%s*true") ~= nil
+  if not ok then
+    self._statusText = "참가 실패: 서버 응답 오류"
     return
   end
 
-  -- 연결 함수가 아직 없다면 일단 대기방으로 이동(디버깅용)
-  SceneManager:change("WaitingRoomScene", { roomCode = code, isHost = false })
-end
+  local joinedRoomCode = _extractJsonString(body, "roomCode")
+  local wsUrl = _extractJsonString(body, "wsUrl")
 
-function RoomSearchScene:_recalcLayout()
-  local w = Config.BASE_WIDTH
-  local h = Config.BASE_HEIGHT
+  if joinedRoomCode == "" or wsUrl == "" then
+    self._statusText = "참가 실패: wsUrl/roomCode 누락"
+    return
+  end
 
-  self._panelX = math.floor((w - self._panelW) / 2)
-  self._panelY = math.floor((h - self._panelH) / 2)
-
-  self._inputRect.x = self._panelX + 40
-  self._inputRect.y = self._panelY + 86
-
-  self._joinRect.x = self._panelX + self._panelW - 40 - self._joinRect.w
-  self._joinRect.y = self._panelY + 156
-
-  self._backRect.x = self._panelX + 40
-  self._backRect.y = self._panelY + 156
+  love.keyboard.setTextInput(false)
+  SceneManager:change("WaitingRoomScene", {
+    isHost = false,
+    roomCode = joinedRoomCode,
+    wsUrl = wsUrl,
+  })
 end
 
 return RoomSearchScene

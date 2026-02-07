@@ -7,6 +7,7 @@
 - SettingsManager 로드/저장/적용 관리
 - RenderScale 적용(월드 좌표 1280x720 고정 + 스크린 스케일링)
 - Overlay 입력 우선 처리 후, SceneManager로 입력 전달
+- NetManager 업데이트 및 이벤트 폴링 제공(getNetManager / pollNetEvent)
 
 외부에서 사용 가능한 함수:
 - App.new()
@@ -21,6 +22,8 @@
 - App:openSettingsPopup()
 - App:closeOverlay()
 - App:getSettingsManager()
+- App:getNetManager()
+- App:pollNetEvent()
 
 주의:
 - Overlay 입력 우선 처리
@@ -31,6 +34,7 @@ local OverlayManager = require("overlay_manager")
 local RenderScale = require("render_scale")
 local SettingsManager = require("settings_manager")
 local Utils = require("utils")
+local NetManager = require("net.net_manager")
 
 local App = {}
 App.__index = App
@@ -41,6 +45,12 @@ function App.new()
   self._overlayManager = OverlayManager.new()
   self._settingsManager = SettingsManager.new()
   self._renderScale = RenderScale.new()
+
+  -- 네트워크(웹소켓) 매니저
+  self._netManager = NetManager.new()
+
+  -- NetManager 이벤트를 단일 pop 방식으로 제공하기 위한 큐
+  self._netEventQueue = {}
 
   self._mouseScreenX = 0
   self._mouseScreenY = 0
@@ -58,6 +68,10 @@ end
 function App:update(dt)
   self._mouseScreenX, self._mouseScreenY = love.mouse.getPosition()
   self._mouseWorldX, self._mouseWorldY = self._renderScale:toWorld(self._mouseScreenX, self._mouseScreenY)
+
+  -- NetManager 업데이트 + 이벤트 누적
+  self._netManager:update(dt)
+  self:_drainNetEvents()
 
   self._overlayManager:update(dt)
   SceneManager:update(dt)
@@ -108,6 +122,12 @@ function App:onTextEdited(text, start, length)
 end
 
 function App:onMousePressed(x, y, button, istouch, presses)
+  if button == 1 then
+    if not self._renderScale:isInViewport(x, y) then
+      return true
+    end
+  end
+
   local worldX, worldY = self._renderScale:toWorld(x, y)
 
   if self._overlayManager:isOpen() then
@@ -154,6 +174,30 @@ end
 
 function App:getSettingsManager()
   return self._settingsManager
+end
+
+function App:getNetManager()
+  return self._netManager
+end
+
+-- WaitingRoomScene 같은 씬에서 while loop로 poll하는 형태를 지원
+function App:pollNetEvent()
+  if #self._netEventQueue <= 0 then
+    return nil
+  end
+  return table.remove(self._netEventQueue, 1)
+end
+
+function App:_drainNetEvents()
+  -- NetManager가 이벤트 배열을 반환하는 구조를 가정 (현재 베이스에 맞춤)
+  local events = self._netManager:popEvents()
+  if not events then
+    return
+  end
+
+  for _, ev in ipairs(events) do
+    table.insert(self._netEventQueue, ev)
+  end
 end
 
 function App:_isSettingsAllowedInCurrentScene()

@@ -22,11 +22,56 @@
 
 주의:
 - room.state는 캐시하고, 그 외 메시지는 이벤트 큐로 전달한다.
+- wsUrl(상대경로)이 내려오면 Config.SERVER_WS_BASE가 필요하다.
 ]]
 local WsClient = require("net/ws_client")
+local Utils = require("utils")
 
 local NetManager = {}
 NetManager.__index = NetManager
+
+local function _startsWith(text, prefix)
+  if not text or not prefix then
+    return false
+  end
+  return string.sub(text, 1, #prefix) == prefix
+end
+
+local function _buildWsUrl(params)
+  local wsUrl = params.wsUrl or ""
+  if wsUrl ~= "" then
+    if _startsWith(wsUrl, "ws://") or _startsWith(wsUrl, "wss://") then
+      return wsUrl
+    end
+
+    if _startsWith(wsUrl, "/") then
+      local base = Config.SERVER_WS_BASE or ""
+      if base == "" then
+        return ""
+      end
+      return base .. wsUrl
+    end
+
+    local base2 = Config.SERVER_WS_BASE or ""
+    if base2 ~= "" then
+      return base2 .. "/" .. wsUrl
+    end
+
+    return wsUrl
+  end
+
+  local roomCode = params.roomCode or ""
+  local url = Config.NET_WS_URL or ""
+  if url == "" then
+    return ""
+  end
+
+  if roomCode ~= "" then
+    url = url .. "?code=" .. roomCode
+  end
+
+  return url
+end
 
 function NetManager.new()
   local self = setmetatable({}, NetManager)
@@ -64,14 +109,14 @@ function NetManager:update(dt)
 end
 
 function NetManager:connect(params)
-  local roomCode = params.roomCode or ""
   local nickname = params.nickname or "플레이어1"
 
   self:disconnect()
 
-  local url = Config.NET_WS_URL
-  if roomCode ~= "" then
-    url = url .. "?code=" .. roomCode
+  local url = _buildWsUrl(params or {})
+  if url == "" then
+    table.insert(self._events, { type = "net.error", payload = { reason = "ws_url_empty" } })
+    return false
   end
 
   self._ws = WsClient.new({
@@ -92,6 +137,8 @@ function NetManager:connect(params)
       table.insert(self._events, { type = "net.error", payload = {} })
     end,
   })
+
+  return true
 end
 
 function NetManager:disconnect()

@@ -3,7 +3,7 @@
 모듈명: HttpClient
 
 역할:
-- 서버 HTTP 요청(현재: POST /room/create)
+- 서버 HTTP 요청(현재: POST JSON)
 - LuaSocket 기반(선택: LuaSec)
 - 로컬 dev(http) + 실서버(https) 지원
 
@@ -81,44 +81,31 @@ local function _encodeJson(tableValue)
   return encode(tableValue)
 end
 
-local function _decodeJson(text)
-  -- 현재 단계에서는 서버 응답 { "roomCode": "ABCDE" } 정도만 파싱하면 되므로
-  -- 매우 제한적으로 처리한다.
-  -- 안정적 파서가 필요하면 다음 단계에서 json 라이브러리로 교체.
-  if not text or text == "" then
+local function _parseUrl(url)
+  if not url or url == "" then
     return nil
   end
 
-  local roomCode = string.match(text, "\"roomCode\"%s*:%s*\"([^\"]+)\"")
-  if roomCode then
-    return { roomCode = roomCode }
-  end
-
-  return nil
-end
-
-local function _parseUrl(url)
-  local protocol, host, path = string.match(url, "^(https?)://([^/]+)(/.*)$")
-  if not protocol then
-    protocol, host = string.match(url, "^(https?)://([^/]+)$")
+  local scheme, host, path = string.match(url, "^(https?)://([^/]+)(/.*)$")
+  if not scheme then
+    scheme, host = string.match(url, "^(https?)://([^/]+)$")
     path = "/"
   end
 
-  if not protocol or not host then
+  if not scheme or not host or not path then
     return nil
   end
 
-  local hostname, port = string.match(host, "^([^:]+):(%d+)$")
-  if hostname then
-    port = tonumber(port)
-  else
-    hostname = host
-    port = (protocol == "https") and 443 or 80
+  local port = nil
+  local hostOnly, portStr = string.match(host, "^([^:]+):(%d+)$")
+  if hostOnly then
+    host = hostOnly
+    port = tonumber(portStr)
   end
 
   return {
-    protocol = protocol,
-    host = hostname,
+    scheme = scheme,
+    host = host,
     port = port,
     path = path,
   }
@@ -130,56 +117,58 @@ function HttpClient.postJson(url, bodyTable)
     return nil, "LuaSocket이 필요합니다(require('socket') 실패)."
   end
 
-  local ssl = _tryRequire("ssl")
   local httpsParams = _parseUrl(url)
   if not httpsParams then
     return nil, "잘못된 URL입니다."
   end
 
-  local tcp = assert(socket.tcp())
-  tcp:settimeout(10)
+  local useHttps = httpsParams.scheme == "https"
+  local ssl = nil
+  if useHttps then
+    ssl = _tryRequire("ssl")
+    if not ssl then
+      return nil, "HTTPS 요청에는 LuaSec(ssl)가 필요합니다(require('ssl') 실패)."
+    end
+  end
 
-  local ok, err = tcp:connect(httpsParams.host, httpsParams.port)
+  local host = httpsParams.host
+  local port = httpsParams.port or (useHttps and 443 or 80)
+  local path = httpsParams.path
+
+  local payload = _encodeJson(bodyTable or {})
+  local req = ""
+  req = req .. "POST " .. path .. " HTTP/1.1\r\n"
+  req = req .. "Host: " .. host .. "\r\n"
+  req = req .. "Content-Type: application/json\r\n"
+  req = req .. "Content-Length: " .. tostring(#payload) .. "\r\n"
+  req = req .. "Connection: close\r\n"
+  req = req .. "\r\n"
+  req = req .. payload
+
+  local tcp = assert(socket.tcp())
+  tcp:settimeout(6)
+
+  local ok, err = tcp:connect(host, port)
   if not ok then
     return nil, "connect 실패: " .. tostring(err)
   end
 
   local conn = tcp
-  if httpsParams.protocol == "https" then
-    if not ssl then
-      return nil, "HTTPS 요청을 위해 LuaSec(ssl)이 필요합니다."
-    end
-
-    local wrapped, werr = ssl.wrap(tcp, {
+  if useHttps then
+    local params = {
       mode = "client",
       protocol = "tlsv1_2",
       verify = "none",
       options = "all",
-      server = httpsParams.host,
-    })
-    if not wrapped then
-      return nil, "ssl.wrap 실패: " .. tostring(werr)
-    end
-
-    local hsOk, hsErr = wrapped:dohandshake()
+    }
+    conn = assert(ssl.wrap(tcp, params))
+    local hsOk, hsErr = conn:dohandshake()
     if not hsOk then
       return nil, "TLS handshake 실패: " .. tostring(hsErr)
     end
-
-    conn = wrapped
   end
 
-  local bodyText = _encodeJson(bodyTable or {})
-  local requestText =
-    "POST " .. httpsParams.path .. " HTTP/1.1\r\n" ..
-    "Host: " .. httpsParams.host .. "\r\n" ..
-    "Content-Type: application/json\r\n" ..
-    "Content-Length: " .. tostring(#bodyText) .. "\r\n" ..
-    "Connection: close\r\n" ..
-    "\r\n" ..
-    bodyText
-
-  conn:send(requestText)
+  conn:send(req)
 
   local chunks = {}
   while true do
@@ -203,7 +192,7 @@ function HttpClient.postJson(url, bodyTable)
 
   local raw = table.concat(chunks)
   local body = string.match(raw, "\r\n\r\n(.*)$") or ""
-  return _decodeJson(body), nil
+  return body, nil
 end
 
 return HttpClient
