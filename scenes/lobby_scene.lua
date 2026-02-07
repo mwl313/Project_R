@@ -72,13 +72,13 @@ function LobbyScene.new(_params)
 
   -- ※ 이 버튼 배치/구성은 “버튼/화면이 멀쩡했던 버전(lobby_scene2)”을 유지
   self._buttons = {
-    { key = "createRoom", label = "방 생성", x = 80, y = 160, w = 360, h = 58 },
-    { key = "findRoom", label = "방 찾기", x = 80, y = 230, w = 360, h = 58 },
-    { key = "changeName", label = "닉네임 변경", x = 80, y = 300, w = 360, h = 58 },
-    { key = "gameGuide", label = "게임 가이드", x = 80, y = 370, w = 360, h = 58 },
-    { key = "skin", label = "스킨 변경", x = 80, y = 440, w = 360, h = 58 },
-    { key = "credits", label = "크레딧", x = 80, y = 510, w = 360, h = 58 },
-    { key = "exit", label = "게임 종료", x = 80, y = 668, w = 360, h = 58 },
+    { key = "createRoom", label = "방 생성", x = 80, y = 160, w = 200, h = 45 },
+    { key = "findRoom", label = "방 찾기", x = 80, y = 230, w = 200, h = 45 },
+    { key = "changeName", label = "닉네임 변경", x = 80, y = 300, w = 200, h = 45 },
+    { key = "gameGuide", label = "게임 가이드", x = 80, y = 370, w = 200, h = 45 },
+    { key = "skin", label = "스킨 변경", x = 80, y = 440, w = 200, h = 45 },
+    { key = "credits", label = "크레딧", x = 80, y = 510, w = 200, h = 45 },
+    { key = "exit", label = "게임 종료", x = 80, y = 580, w = 200, h = 45 },
   }
 
   return self
